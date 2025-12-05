@@ -166,9 +166,28 @@ if check_frontend_build; then
 fi
 echo ""
 
+# 获取本机 IP
+get_local_ip() {
+    # Linux
+    if command -v hostname &> /dev/null; then
+        hostname -I 2>/dev/null | awk '{print $1}'
+    # macOS
+    elif command -v ipconfig &> /dev/null; then
+        ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null
+    else
+        echo "127.0.0.1"
+    fi
+}
+
+LOCAL_IP=$(get_local_ip)
+
 # 启动服务
 echo -e "${GREEN}启动 Web UI...${NC}"
-echo -e "访问地址: ${CYAN}http://localhost:$TRAINER_PORT${NC}"
+echo -e "访问地址:"
+echo -e "  本机:   ${CYAN}http://localhost:$TRAINER_PORT${NC}"
+if [ "$TRAINER_HOST" = "0.0.0.0" ] && [ -n "$LOCAL_IP" ] && [ "$LOCAL_IP" != "127.0.0.1" ]; then
+    echo -e "  局域网: ${CYAN}http://$LOCAL_IP:$TRAINER_PORT${NC}"
+fi
 echo ""
 echo -e "${YELLOW}按 Ctrl+C 停止服务${NC}"
 echo ""
