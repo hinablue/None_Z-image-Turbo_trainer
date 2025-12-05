@@ -155,6 +155,81 @@ cd webui-vue/api && python main.py --port 9198
 
 ---
 
+## 🖥️ 命令行使用（高级）
+
+除了 Web UI，你也可以直接使用命令行进行操作：
+
+### 生成缓存
+
+```bash
+# 生成 Latent 缓存（VAE 编码）
+python -m zimage_trainer.cache_latents \
+    --model_path ./zimage_models \
+    --dataset_path ./datasets/your_dataset \
+    --output_dir ./datasets/your_dataset
+
+# 生成 Text 缓存（文本编码）
+python -m zimage_trainer.cache_text_encoder \
+    --model_path ./zimage_models \
+    --dataset_path ./datasets/your_dataset \
+    --output_dir ./datasets/your_dataset
+```
+
+### 启动训练
+
+```bash
+# 使用配置文件训练
+python scripts/train_acrf.py --config config/acrf_config.toml
+
+# 或直接指定参数
+python scripts/train_acrf.py \
+    --model_path ./zimage_models \
+    --dataset_path ./datasets/your_dataset \
+    --output_dir ./output \
+    --network_dim 16 \
+    --learning_rate 1e-4 \
+    --num_train_epochs 10
+```
+
+### 推理生成
+
+```bash
+# 加载 LoRA 生成图片
+python -m zimage_trainer.inference \
+    --model_path ./zimage_models \
+    --lora_path ./output/your_lora.safetensors \
+    --prompt "your prompt here" \
+    --output_path ./output/generated.png \
+    --num_inference_steps 10
+```
+
+### 启动 Web UI 服务
+
+```bash
+# 方式一：使用脚本
+./start.sh          # Linux/Mac
+start.bat           # Windows
+
+# 方式二：直接启动
+cd webui-vue/api
+python main.py --port 9198 --host 0.0.0.0
+
+# 方式三：使用 uvicorn（支持热重载）
+cd webui-vue/api
+uvicorn main:app --port 9198 --reload
+```
+
+### 转换 LoRA 格式
+
+```bash
+# 转换为 ComfyUI 兼容格式
+python scripts/convert_lora_comfyui.py \
+    --input ./output/your_lora.safetensors \
+    --output ./output/your_lora_comfyui.safetensors
+```
+
+---
+
 ## ⚙️ 配置说明
 
 ### 环境变量 (`.env`)
