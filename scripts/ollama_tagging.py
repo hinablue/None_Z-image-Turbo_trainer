@@ -101,28 +101,48 @@ def generate_caption(img_path: Path, ollama_url: str, model: str, prompt: str,
         
         response_json = resp.json()
         
+        # 打印响应的所有字段
+        print(f"[API] Response keys: {list(response_json.keys())}", flush=True)
+        
         # 检查是否完成
         if not response_json.get("done", False):
             print(f"[WARN] Response not marked as done!", flush=True)
         
-        # 检查 response 字段
-        if "response" in response_json:
-            caption = response_json["response"].strip()
-            print(f"[API] Caption length: {len(caption)} chars", flush=True)
+        # 获取 response 字段
+        caption = response_json.get("response", "").strip()
+        print(f"[API] Caption length: {len(caption)} chars", flush=True)
+        
+        # 如果 response 为空，检查其他字段
+        if not caption:
+            # 检查 thinking 字段
+            if "thinking" in response_json and response_json["thinking"]:
+                thinking_len = len(response_json["thinking"])
+                print(f"[API] Found 'thinking' field: {thinking_len} chars", flush=True)
+                print(f"[API] thinking preview: {response_json['thinking'][:200]}...", flush=True)
             
-            # 简单清洗
-            caption = caption.replace("```markdown", "").replace("```", "").strip()
+            # 检查 message 字段 (chat API 格式)
+            if "message" in response_json:
+                msg = response_json["message"]
+                if isinstance(msg, dict) and "content" in msg:
+                    caption = msg["content"].strip()
+                    print(f"[API] Found message.content: {len(caption)} chars", flush=True)
             
-            # 检查是否被截断（常见截断标志）
-            if caption.endswith(('...', '…', '，', '、')):
-                print(f"[WARN] Caption may be truncated: ...{caption[-50:]}", flush=True)
-            
-            return caption if caption else None
-        else:
-            print(f"[ERROR] No 'response' in API result. Keys: {response_json.keys()}", flush=True)
-            # 打印完整响应用于调试
-            print(f"[DEBUG] Full response: {str(response_json)[:500]}", flush=True)
-            return None
+            # 如果还是空，打印所有非空字段
+            if not caption:
+                for key, value in response_json.items():
+                    if value and key not in ['context', 'created_at', 'model']:
+                        val_str = str(value)[:100] if value else "None"
+                        print(f"[API] Field '{key}': {val_str}", flush=True)
+                return None
+        
+        # 简单清洗
+        caption = caption.replace("```markdown", "").replace("```", "").strip()
+        
+        # 检查是否被截断（常见截断标志）
+        if caption and caption.endswith(('...', '…', '，', '、')):
+            print(f"[WARN] Caption may be truncated: ...{caption[-50:]}", flush=True)
+        
+        return caption if caption else None
             
     except requests.exceptions.Timeout:
         print(f"[ERROR] Timeout ({timeout}s): {img_path.name}", flush=True)
