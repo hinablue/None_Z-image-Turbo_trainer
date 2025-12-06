@@ -178,7 +178,7 @@
                 </el-tooltip>
               </label>
               <el-select v-model="config.training.lr_scheduler" style="width: 100%">
-                <el-option label="constant (固定)" value="constant" />
+                <el-option label="constant (固定) ⭐推荐" value="constant" />
                 <el-option label="linear (线性衰减)" value="linear" />
                 <el-option label="cosine (余弦退火)" value="cosine" />
                 <el-option label="cosine_with_restarts (余弦重启)" value="cosine_with_restarts" />
@@ -188,17 +188,17 @@
             <div class="control-row">
               <span class="label">
                 Warmup Steps
-                <el-tooltip content="预热步数，开始时慢慢提升学习率，有助于稳定训练" placement="top">
+                <el-tooltip content="预热步数。⚠️ 少样本训练建议设为 0，否则过长的预热会浪费训练时间（warmup 占比应 < 5%）" placement="top">
                   <el-icon class="help-icon"><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
-              <el-slider v-model="config.training.lr_warmup_steps" :min="0" :max="1000" :step="10" :show-tooltip="false" class="slider-flex" />
+              <el-slider v-model="config.training.lr_warmup_steps" :min="0" :max="500" :step="5" :show-tooltip="false" class="slider-flex" />
               <el-input-number v-model="config.training.lr_warmup_steps" :min="0" controls-position="right" class="input-fixed" />
             </div>
             <div class="control-row" v-if="config.training.lr_scheduler === 'cosine_with_restarts'">
               <span class="label">
                 Num Cycles
-                <el-tooltip content="余弦重启的周期数" placement="top">
+                <el-tooltip content="余弦重启周期数。cycles=1 时等同于普通 cosine；cycles=2+ 时学习率会在训练中重启（升高）" placement="top">
                   <el-icon class="help-icon"><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
