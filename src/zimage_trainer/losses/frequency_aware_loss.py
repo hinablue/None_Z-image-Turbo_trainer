@@ -139,7 +139,8 @@ class FrequencyAwareLoss(nn.Module):
         base_loss = F.mse_loss(pred_v, target_v, reduction="mean")
         
         # 2. 计算 sigma（Z-Image: sigma = timestep / 1000）
-        sigmas = timesteps.float() / num_train_timesteps
+        # 保持输入张量的 dtype，避免混合精度问题
+        sigmas = timesteps.to(dtype=pred_v.dtype) / num_train_timesteps
         
         # 3. 反推 x0（在干净 latent 空间做频域分析）
         # 注意：必须保持梯度流，因为要优化 pred_v
@@ -167,7 +168,8 @@ class FrequencyAwareLoss(nn.Module):
         loss_lf_direction = (1 - cos_sim).mean()
         
         # 可选：低频幅度约束（防止发灰）
-        loss_lf_magnitude = torch.tensor(0.0, device=pred_v.device)
+        # 保持与 pred_v 相同的 dtype，避免混合精度问题
+        loss_lf_magnitude = torch.zeros(1, device=pred_v.device, dtype=pred_v.dtype).squeeze()
         if self.lf_magnitude_weight > 0:
             pred_norm = pred_low_flat.norm(dim=1)
             target_norm = target_low_flat.norm(dim=1)

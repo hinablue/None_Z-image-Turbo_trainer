@@ -349,8 +349,8 @@ class LatentStyleStructureLoss(StyleStructureLoss):
         # 基础 loss
         loss_base = F.mse_loss(pred_v, target_v)
         
-        # 计算 sigma
-        sigmas = timesteps.float() / num_train_timesteps
+        # 计算 sigma（保持输入张量的 dtype，避免混合精度问题）
+        sigmas = timesteps.to(dtype=pred_v.dtype) / num_train_timesteps
         sigma_broadcast = sigmas.view(-1, 1, 1, 1)
         
         # 反推 x0
