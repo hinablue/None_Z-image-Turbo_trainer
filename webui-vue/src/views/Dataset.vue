@@ -670,6 +670,38 @@
         <el-button @click="showBucketCalculator = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!-- 上传进度对话框 -->
+    <el-dialog
+      v-model="showUploadProgress"
+      title="上传文件"
+      width="500px"
+      :close-on-click-modal="false"
+      :close-on-press-escape="false"
+      :show-close="!isUploadingFolder"
+    >
+      <div class="upload-progress-content">
+        <div class="progress-info">
+          <span class="progress-text">{{ uploadProgressText }}</span>
+          <span class="progress-percent">{{ uploadProgress }}%</span>
+        </div>
+        <el-progress 
+          :percentage="uploadProgress" 
+          :status="uploadStatus"
+          :stroke-width="20"
+          striped
+          striped-flow
+        />
+        <div class="upload-stats" v-if="uploadStats.total > 0">
+          <span>成功: <strong class="success">{{ uploadStats.success }}</strong></span>
+          <span>失败: <strong class="fail">{{ uploadStats.fail }}</strong></span>
+          <span>总计: <strong>{{ uploadStats.total }}</strong></span>
+        </div>
+      </div>
+      <template #footer v-if="!isUploadingFolder">
+        <el-button type="primary" @click="showUploadProgress = false">完成</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -981,6 +1013,13 @@ function goBack() {
 const folderInput = ref<HTMLInputElement | null>(null)
 const isUploadingFolder = ref(false)
 
+// 上传进度相关
+const showUploadProgress = ref(false)
+const uploadProgress = ref(0)
+const uploadProgressText = ref('准备上传...')
+const uploadStatus = ref<'' | 'success' | 'exception'>('')
+const uploadStats = ref({ success: 0, fail: 0, total: 0 })
+
 // 触发文件夹选择
 function triggerFolderUpload() {
   folderInput.value?.click()
@@ -1028,18 +1067,29 @@ async function handleFolderSelect(event: Event) {
 // 分批上传文件
 async function uploadFilesInBatches(files: File[], datasetName: string) {
   isUploadingFolder.value = true
+  
+  // 初始化进度状态
+  showUploadProgress.value = true
+  uploadProgress.value = 0
+  uploadProgressText.value = '准备上传...'
+  uploadStatus.value = ''
+  uploadStats.value = { success: 0, fail: 0, total: files.length }
+  
   const batchSize = 20
   let successCount = 0
   let failCount = 0
   
   try {
-    const totalBatches = Math.ceil(files.length / batchSize)
-    
     for (let i = 0; i < files.length; i += batchSize) {
       const batch = files.slice(i, i + batchSize)
       const formData = new FormData()
       formData.append('dataset_name', datasetName)
       batch.forEach(f => formData.append('files', f))
+      
+      // 更新进度文本
+      const currentFile = i + 1
+      const endFile = Math.min(i + batchSize, files.length)
+      uploadProgressText.value = `正在上传 ${currentFile}-${endFile} / ${files.length}`
       
       try {
         const res = await axios.post('/api/dataset/upload_batch', formData)
@@ -1050,13 +1100,17 @@ async function uploadFilesInBatches(files: File[], datasetName: string) {
         console.error(e)
       }
       
-      // Optional: Update progress message
-      if (i + batchSize < files.length) {
-        ElMessage.info(`正在上传: ${Math.round(((i + batchSize) / files.length) * 100)}%`)
-      }
+      // 更新进度条
+      uploadProgress.value = Math.round(((i + batchSize) / files.length) * 100)
+      uploadStats.value = { success: successCount, fail: failCount, total: files.length }
     }
     
-    ElMessage.success(`上传完成: 成功 ${successCount}, 失败 ${failCount}`)
+    // 完成
+    uploadProgress.value = 100
+    uploadProgressText.value = '上传完成'
+    uploadStatus.value = failCount === 0 ? 'success' : (successCount > 0 ? '' : 'exception')
+    uploadStats.value = { success: successCount, fail: failCount, total: files.length }
+    
     await loadLocalDatasets()
     
     // Auto open if created
@@ -1064,7 +1118,9 @@ async function uploadFilesInBatches(files: File[], datasetName: string) {
     if (newDs) openDataset(newDs)
     
   } catch (error: any) {
-    ElMessage.error('上传过程中发生错误: ' + error.message)
+    uploadProgress.value = 100
+    uploadProgressText.value = '上传出错: ' + error.message
+    uploadStatus.value = 'exception'
   } finally {
     isUploadingFolder.value = false
     if (folderInput.value) folderInput.value.value = ''
@@ -2479,6 +2535,51 @@ function formatSize(bytes: number): string {
 }
 
 /* 分桶计算器样式 */
+/* 上传进度样式 */
+.upload-progress-content {
+  padding: 20px 0;
+  
+  .progress-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 12px;
+    
+    .progress-text {
+      font-size: 14px;
+      color: var(--text-secondary);
+    }
+    
+    .progress-percent {
+      font-size: 18px;
+      font-weight: bold;
+      color: var(--el-color-primary);
+    }
+  }
+  
+  .upload-stats {
+    display: flex;
+    justify-content: center;
+    gap: 24px;
+    margin-top: 16px;
+    font-size: 14px;
+    color: var(--text-secondary);
+    
+    strong {
+      font-weight: bold;
+      margin-left: 4px;
+      
+      &.success {
+        color: var(--el-color-success);
+      }
+      
+      &.fail {
+        color: var(--el-color-danger);
+      }
+    }
+  }
+}
+
 .bucket-dialog {
   .bucket-config {
     margin-bottom: 20px;
