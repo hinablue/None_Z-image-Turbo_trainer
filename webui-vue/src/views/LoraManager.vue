@@ -10,7 +10,18 @@
     <el-card class="lora-card glass-card" shadow="hover">
       <template #header>
         <div class="card-header">
-          <span>训练产出 ({{ loraList.length }} 个模型)</span>
+          <div class="header-left">
+            <span>训练产出 ({{ loraList.length }} 个模型)</span>
+            <!-- 批量操作按钮 -->
+            <div class="batch-actions" v-if="selectedLoras.length > 0">
+              <el-button type="primary" size="small" @click="batchDownload">
+                <el-icon><Download /></el-icon> 下载选中 ({{ selectedLoras.length }})
+              </el-button>
+              <el-button type="danger" size="small" @click="batchDelete">
+                <el-icon><Delete /></el-icon> 删除选中 ({{ selectedLoras.length }})
+              </el-button>
+            </div>
+          </div>
           <div class="path-hint">
             <span>路径: {{ loraPath }}</span>
             <el-button 
@@ -33,7 +44,16 @@
           </template>
         </el-empty>
 
-        <el-table v-else :data="loraList" style="width: 100%" stripe>
+        <el-table 
+          v-else 
+          :data="loraList" 
+          style="width: 100%" 
+          stripe
+          @selection-change="handleSelectionChange"
+          ref="tableRef"
+        >
+          <el-table-column type="selection" width="50" />
+          
           <el-table-column prop="name" label="文件名" min-width="300">
             <template #default="{ row }">
               <div class="file-name">
@@ -65,7 +85,7 @@
       </div>
     </el-card>
 
-    <!-- 删除确认对话框 -->
+    <!-- 删除确认对话框（单个） -->
     <el-dialog v-model="deleteDialogVisible" title="确认删除" width="400px">
       <p>确定要删除 LoRA 模型吗？</p>
       <p class="delete-filename">{{ selectedLora?.name }}</p>
@@ -73,6 +93,25 @@
       <template #footer>
         <el-button @click="deleteDialogVisible = false">取消</el-button>
         <el-button type="danger" @click="confirmDelete" :loading="deleting">删除</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 批量删除确认对话框 -->
+    <el-dialog v-model="batchDeleteDialogVisible" title="批量删除确认" width="500px">
+      <p>确定要删除以下 {{ selectedLoras.length }} 个 LoRA 模型吗？</p>
+      <div class="batch-delete-list">
+        <div v-for="lora in selectedLoras" :key="lora.path" class="delete-item">
+          <el-icon><Document /></el-icon>
+          <span>{{ lora.name }}</span>
+          <span class="delete-item-size">{{ formatSize(lora.size) }}</span>
+        </div>
+      </div>
+      <p class="warning-text">⚠️ 此操作不可恢复！</p>
+      <template #footer>
+        <el-button @click="batchDeleteDialogVisible = false">取消</el-button>
+        <el-button type="danger" @click="confirmBatchDelete" :loading="deleting">
+          删除全部 ({{ selectedLoras.length }})
+        </el-button>
       </template>
     </el-dialog>
   </div>
@@ -94,8 +133,11 @@ const loading = ref(false)
 const loraList = ref<LoraItem[]>([])
 const loraPath = ref('')
 const deleteDialogVisible = ref(false)
+const batchDeleteDialogVisible = ref(false)
 const selectedLora = ref<LoraItem | null>(null)
+const selectedLoras = ref<LoraItem[]>([])
 const deleting = ref(false)
+const tableRef = ref()
 
 const formatSize = (bytes: number) => {
   if (bytes < 1024) return bytes + ' B'
@@ -122,6 +164,7 @@ const copyPath = async () => {
 
 const fetchLoras = async () => {
   loading.value = true
+  selectedLoras.value = []
   try {
     const [lorasRes, pathsRes] = await Promise.all([
       axios.get('/api/loras'),
@@ -137,8 +180,13 @@ const fetchLoras = async () => {
   }
 }
 
+// 多选变化处理
+const handleSelectionChange = (selection: LoraItem[]) => {
+  selectedLoras.value = selection
+}
+
+// 单个下载
 const downloadLora = (lora: LoraItem) => {
-  // 直接用浏览器下载，不用 axios
   const link = document.createElement('a')
   link.href = `/api/loras/download?path=${encodeURIComponent(lora.path)}`
   link.setAttribute('download', lora.name.split('/').pop() || 'lora.safetensors')
@@ -148,11 +196,33 @@ const downloadLora = (lora: LoraItem) => {
   ElMessage.info('已开始下载')
 }
 
+// 批量下载
+const batchDownload = () => {
+  if (selectedLoras.value.length === 0) return
+  
+  ElMessage.info(`开始下载 ${selectedLoras.value.length} 个文件...`)
+  
+  // 逐个触发下载（浏览器会自动处理多个下载）
+  selectedLoras.value.forEach((lora, index) => {
+    setTimeout(() => {
+      downloadLora(lora)
+    }, index * 500) // 间隔 500ms 避免浏览器阻止
+  })
+}
+
+// 单个删除
 const deleteLora = (lora: LoraItem) => {
   selectedLora.value = lora
   deleteDialogVisible.value = true
 }
 
+// 批量删除确认
+const batchDelete = () => {
+  if (selectedLoras.value.length === 0) return
+  batchDeleteDialogVisible.value = true
+}
+
+// 确认单个删除
 const confirmDelete = async () => {
   if (!selectedLora.value) return
   
@@ -165,6 +235,41 @@ const confirmDelete = async () => {
   } catch (e) {
     console.error('Delete failed:', e)
     ElMessage.error('删除失败')
+  } finally {
+    deleting.value = false
+  }
+}
+
+// 确认批量删除
+const confirmBatchDelete = async () => {
+  if (selectedLoras.value.length === 0) return
+  
+  deleting.value = true
+  let successCount = 0
+  let failCount = 0
+  
+  try {
+    for (const lora of selectedLoras.value) {
+      try {
+        await axios.delete(`/api/loras/delete?path=${encodeURIComponent(lora.path)}`)
+        successCount++
+      } catch (e) {
+        console.error('Delete failed:', lora.name, e)
+        failCount++
+      }
+    }
+    
+    if (failCount === 0) {
+      ElMessage.success(`成功删除 ${successCount} 个文件`)
+    } else {
+      ElMessage.warning(`删除完成: ${successCount} 成功, ${failCount} 失败`)
+    }
+    
+    batchDeleteDialogVisible.value = false
+    fetchLoras()
+  } catch (e) {
+    console.error('Batch delete error:', e)
+    ElMessage.error('批量删除出错')
   } finally {
     deleting.value = false
   }
@@ -205,6 +310,20 @@ onMounted(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.batch-actions {
+  display: flex;
+  gap: 8px;
 }
 
 .path-hint {
@@ -251,11 +370,54 @@ onMounted(() => {
 .warning-text {
   color: var(--el-color-danger);
   font-size: 12px;
+  margin-top: 12px;
+}
+
+.batch-delete-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--el-border-color-light);
+  border-radius: 4px;
+  margin: 12px 0;
+}
+
+.delete-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--el-border-color-lighter);
+  font-size: 13px;
+}
+
+.delete-item:last-child {
+  border-bottom: none;
+}
+
+.delete-item .el-icon {
+  color: var(--el-color-primary);
+  flex-shrink: 0;
+}
+
+.delete-item span {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delete-item-size {
+  flex: none !important;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 
 :deep(.el-table) {
   --el-table-bg-color: transparent;
   --el-table-tr-bg-color: transparent;
 }
-</style>
 
+:deep(.el-table .el-table__header-wrapper th) {
+  background: var(--el-fill-color-light);
+}
+</style>
