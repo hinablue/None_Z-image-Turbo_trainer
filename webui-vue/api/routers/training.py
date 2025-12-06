@@ -313,6 +313,14 @@ async def start_training(config: Dict[str, Any]):
         state.clear_training_history()
         state.training_logs.clear()
         
+        # 广播清空图表消息给前端
+        from .websocket import manager
+        import asyncio
+        asyncio.create_task(manager.broadcast({
+            "type": "training_reset",
+            "training_history": state.get_training_history()  # 发送空的历史数据
+        }))
+        
         # 如果有生成模型加载，先卸载释放显存
         if state.pipeline is not None:
             state.add_log("检测到生成模型已加载，正在卸载以释放显存...", "info")

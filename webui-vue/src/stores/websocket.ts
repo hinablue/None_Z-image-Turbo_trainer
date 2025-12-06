@@ -292,6 +292,25 @@ export const useWebSocketStore = defineStore('websocket', () => {
         logs.value = []
         break
         
+      case 'training_reset':
+        // 训练开始时重置图表数据
+        console.log('[WebSocket] Training reset - clearing chart data')
+        if (message.training_history) {
+          const h = message.training_history
+          trainingStore.setHistory(h.loss_history || [], h.lr_history || [])
+          trainingStore.updateProgress({
+            currentEpoch: 0,
+            totalEpochs: h.total_epochs || 0,
+            currentStep: 0,
+            totalSteps: h.total_steps || 0,
+            learningRate: 0,
+            loss: 0,
+            elapsedTime: 0,
+            estimatedTimeRemaining: 0
+          })
+        }
+        break
+        
       default:
         console.log('[WebSocket] Unknown message type:', message.type)
     }
