@@ -501,22 +501,31 @@ def generate_caption_ollama_sync(img_path: Path, ollama_url: str, model: str, pr
         print(f"[Ollama] Model: {model}, URL: {ollama_url}, Think: {enable_think}")
         
         # 关键：context=[] 清除对话历史，确保每张图片独立处理
+        # 对于 qwen3-vl，不启用思考时在 prompt 前加 /no_think
+        actual_prompt = prompt
+        if not enable_think and ('qwen3' in model.lower() or 'qwen-3' in model.lower()):
+            actual_prompt = f"/no_think {prompt}"
+            print(f"[Ollama] Added /no_think prefix for qwen3 model")
+        
         payload = {
             "model": model,
-            "prompt": prompt,
+            "prompt": actual_prompt,
             "images": [base64_img],
             "stream": False,
             "context": [],  # 清除上下文，避免累积图片
             "temperature": 0.7,
-            "top_p": 0.9
+            "top_p": 0.9,
+            "options": {
+                "num_predict": 1024,  # 限制输出长度
+            }
         }
         
         # 添加思考模式控制（某些模型如 deepseek、qwen3 支持）
         # 注意：不是所有模型都支持这个参数，不支持的模型会忽略它
         if not enable_think:
-            # 关闭思考模式，直接输出结果
-            payload["options"] = payload.get("options", {})
-            payload["options"]["num_predict"] = 1024  # 限制输出长度
+            # 尝试多种方式关闭思考模式
+            payload["options"]["think"] = False  # Ollama 标准方式
+            payload["think"] = False  # 备用方式
         
         print(f"[Ollama] Sending request to {ollama_url}/api/generate")
         resp = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=180)
@@ -526,8 +535,29 @@ def generate_caption_ollama_sync(img_path: Path, ollama_url: str, model: str, pr
         data = resp.json()
         print(f"[Ollama] Response keys: {data.keys()}")
         
+        caption = ""
+        
+        # 检查 response 字段
         if "response" in data:
             caption = data["response"].strip()
+            print(f"[Ollama] Raw response ({len(caption)} chars): {caption[:200] if caption else '(empty)'}...")
+        
+        # 如果 response 为空，检查 thinking 字段（某些模型如 qwen3-vl 会把结果放这里）
+        if not caption and "thinking" in data:
+            thinking_content = data["thinking"]
+            if thinking_content:
+                print(f"[Ollama] Found thinking field ({len(thinking_content)} chars)")
+                # 尝试从 thinking 中提取最后的结论
+                # 通常思考结束后会有总结
+                lines = thinking_content.strip().split('\n')
+                # 取最后几行非空内容作为 caption
+                non_empty_lines = [l.strip() for l in lines if l.strip() and not l.strip().startswith(('好的', '让我', '我需要', '首先', '然后', '接下来', '我来'))]
+                if non_empty_lines:
+                    # 取最后一段作为描述
+                    caption = non_empty_lines[-1] if len(non_empty_lines[-1]) > 20 else '\n'.join(non_empty_lines[-3:])
+                    print(f"[Ollama] Extracted from thinking: {caption[:100]}...")
+        
+        if caption:
             # 清理输出
             caption = caption.replace("```markdown", "").replace("```", "")
             import re
@@ -542,12 +572,14 @@ def generate_caption_ollama_sync(img_path: Path, ollama_url: str, model: str, pr
             
             if not caption:
                 print(f"[Ollama] Warning: Empty caption after cleaning for {img_path.name}")
+                print(f"[Ollama] Tip: If using qwen3-vl, try adding '/no_think' to prompt or use a different model")
                 return None
             
-            print(f"[Ollama] Caption: {caption[:100]}...")
+            print(f"[Ollama] Final Caption: {caption[:100]}...")
             return caption
         else:
-            print(f"[Ollama] No 'response' in data: {data}")
+            print(f"[Ollama] No usable response for {img_path.name}")
+            print(f"[Ollama] Full data: {data}")
         return None
     except requests.exceptions.Timeout:
         print(f"[Ollama] Timeout for {img_path.name} - try a smaller image or faster model")
