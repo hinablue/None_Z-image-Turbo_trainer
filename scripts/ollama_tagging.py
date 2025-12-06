@@ -85,36 +85,73 @@ def generate_caption(img_path: Path, ollama_url: str, model: str, prompt: str,
             "images": [base64_img],
             "stream": False,
             "temperature": 0.7,
-            "top_p": 0.9
+            "top_p": 0.9,
+            "options": {
+                "num_predict": 2048  # 限制输出长度，避免无限生成
+            }
         }
         
+        print(f"[API] Sending request for {img_path.name}...", flush=True)
         resp = requests.post(f"{ollama_url}/api/generate", json=payload, timeout=timeout)
         resp.raise_for_status()
         
+        # 检查响应是否完整
+        response_text = resp.text
+        print(f"[API] Response length: {len(response_text)} bytes", flush=True)
+        
         response_json = resp.json()
+        
+        # 检查是否完成
+        if not response_json.get("done", False):
+            print(f"[WARN] Response not marked as done!", flush=True)
+        
+        # 检查 response 字段
         if "response" in response_json:
             caption = response_json["response"].strip()
+            print(f"[API] Caption length: {len(caption)} chars", flush=True)
+            
             # 简单清洗
             caption = caption.replace("```markdown", "").replace("```", "").strip()
+            
+            # 检查是否被截断（常见截断标志）
+            if caption.endswith(('...', '…', '，', '、')):
+                print(f"[WARN] Caption may be truncated: ...{caption[-50:]}", flush=True)
+            
             return caption if caption else None
         else:
-            print(f"[ERROR] API 返回格式异常: {response_json}", flush=True)
+            print(f"[ERROR] No 'response' in API result. Keys: {response_json.keys()}", flush=True)
+            # 打印完整响应用于调试
+            print(f"[DEBUG] Full response: {str(response_json)[:500]}", flush=True)
             return None
             
     except requests.exceptions.Timeout:
-        print(f"[ERROR] 超时: {img_path.name}", flush=True)
+        print(f"[ERROR] Timeout ({timeout}s): {img_path.name}", flush=True)
+        return None
+    except requests.exceptions.JSONDecodeError as e:
+        print(f"[ERROR] Invalid JSON response: {e}", flush=True)
+        print(f"[DEBUG] Raw response: {resp.text[:500] if resp else 'N/A'}", flush=True)
         return None
     except Exception as e:
-        print(f"[ERROR] 请求失败 ({img_path.name}): {e}", flush=True)
+        print(f"[ERROR] Request failed ({img_path.name}): {e}", flush=True)
+        import traceback
+        traceback.print_exc()
         return None
 
 
-def save_caption(img_path: Path, caption: str, trigger_word: str = ""):
-    """保存标注文件"""
+def save_caption(img_path: Path, caption: str, trigger_word: str = "") -> bool:
+    """保存标注文件，返回是否成功"""
+    # 校验内容
+    if not caption or len(caption) < 10:
+        print(f"[WARN] Caption too short ({len(caption) if caption else 0} chars), skipping save", flush=True)
+        return False
+    
     if trigger_word.strip():
         caption = f"{trigger_word.strip()}, {caption}"
+    
     txt_path = img_path.with_suffix(".txt")
     txt_path.write_text(caption, encoding="utf-8")
+    print(f"[SAVE] {txt_path.name} ({len(caption)} chars)", flush=True)
+    return True
 
 
 def main():
