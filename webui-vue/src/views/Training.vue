@@ -148,6 +148,44 @@
             <span class="label">Lambda Cosine</span>
             <span class="value">{{ currentConfig.training?.lambda_cosine ?? 0 }}</span>
           </div>
+          <div class="preview-item">
+            <span class="label">损失模式</span>
+            <span class="value highlight">{{ getLossModeLabel(currentConfig.training?.loss_mode) }}</span>
+          </div>
+        </div>
+        <!-- 频域感知参数 -->
+        <div class="preview-grid-3" v-if="['frequency', 'unified'].includes(currentConfig.training?.loss_mode)">
+          <div class="preview-item">
+            <span class="label">Alpha HF (高频)</span>
+            <span class="value">{{ currentConfig.training?.alpha_hf ?? 1.0 }}</span>
+          </div>
+          <div class="preview-item">
+            <span class="label">Beta LF (低频)</span>
+            <span class="value">{{ currentConfig.training?.beta_lf ?? 0.2 }}</span>
+          </div>
+          <div class="preview-item">
+            <span class="label">Downsample Factor</span>
+            <span class="value">{{ currentConfig.training?.downsample_factor ?? 4 }}</span>
+          </div>
+        </div>
+        <!-- 风格结构参数 -->
+        <div class="preview-grid-3" v-if="['style', 'unified'].includes(currentConfig.training?.loss_mode)">
+          <div class="preview-item">
+            <span class="label">λ Struct (结构)</span>
+            <span class="value">{{ currentConfig.training?.lambda_struct ?? 1.0 }}</span>
+          </div>
+          <div class="preview-item">
+            <span class="label">λ Light (光影)</span>
+            <span class="value">{{ currentConfig.training?.lambda_light ?? 0.5 }}</span>
+          </div>
+          <div class="preview-item">
+            <span class="label">λ Color (色调)</span>
+            <span class="value">{{ currentConfig.training?.lambda_color ?? 0.3 }}</span>
+          </div>
+          <div class="preview-item">
+            <span class="label">λ Tex (质感)</span>
+            <span class="value">{{ currentConfig.training?.lambda_tex ?? 0.5 }}</span>
+          </div>
         </div>
       </div>
       
@@ -324,6 +362,16 @@ function getDatasetName(path: string): string {
   // 提取路径最后一部分作为名称
   const parts = path.replace(/\\/g, '/').split('/')
   return parts[parts.length - 1] || parts[parts.length - 2] || path
+}
+
+function getLossModeLabel(mode: string | undefined): string {
+  const labels: Record<string, string> = {
+    'standard': 'Standard (基础)',
+    'frequency': 'Frequency (频域感知)',
+    'style': 'Style (风格结构)',
+    'unified': 'Unified (统一模式)'
+  }
+  return labels[mode || 'standard'] || 'Standard (基础)'
 }
 
 function formatTime(seconds: number): string {
