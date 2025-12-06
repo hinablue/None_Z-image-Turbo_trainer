@@ -11,7 +11,18 @@
       <template #header>
         <div class="card-header">
           <span>训练产出 ({{ loraList.length }} 个模型)</span>
-          <span class="path-hint">路径: {{ loraPath }}</span>
+          <div class="path-hint">
+            <span>路径: {{ loraPath }}</span>
+            <el-button 
+              type="primary" 
+              link 
+              size="small" 
+              @click="copyPath"
+              class="copy-btn"
+            >
+              <el-icon><CopyDocument /></el-icon>
+            </el-button>
+          </div>
         </div>
       </template>
 
@@ -69,7 +80,7 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { Files, Refresh, Document, Download, Delete, FolderOpened } from '@element-plus/icons-vue'
+import { Files, Refresh, Document, Download, Delete, FolderOpened, CopyDocument } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
@@ -91,6 +102,22 @@ const formatSize = (bytes: number) => {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' MB'
   return (bytes / 1024 / 1024 / 1024).toFixed(2) + ' GB'
+}
+
+const copyPath = async () => {
+  try {
+    await navigator.clipboard.writeText(loraPath.value)
+    ElMessage.success('路径已复制到剪贴板')
+  } catch (e) {
+    // 降级方案
+    const textarea = document.createElement('textarea')
+    textarea.value = loraPath.value
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+    ElMessage.success('路径已复制到剪贴板')
+  }
 }
 
 const fetchLoras = async () => {
@@ -181,9 +208,22 @@ onMounted(() => {
 }
 
 .path-hint {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 12px;
   color: var(--el-text-color-secondary);
   font-family: monospace;
+}
+
+.copy-btn {
+  padding: 2px 4px;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.copy-btn:hover {
+  opacity: 1;
 }
 
 .lora-content {
