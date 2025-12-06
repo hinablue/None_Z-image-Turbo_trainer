@@ -202,7 +202,19 @@
         :class="{ selected: datasetStore.selectedImages.has(image.path) }"
       >
         <div class="image-wrapper" @click="previewImage(image)">
-          <img :src="image.thumbnailUrl" :alt="image.filename" loading="lazy" />
+          <img 
+            :src="getImageUrl(image)" 
+            :alt="image.filename" 
+            loading="lazy"
+            @error="handleImageError($event, image)"
+            :data-retry="imageRetryCount.get(image.path) || 0"
+          />
+          <!-- 加载失败占位 -->
+          <div class="image-error-overlay" v-if="imageLoadFailed.has(image.path)">
+            <el-icon><WarningFilled /></el-icon>
+            <span>加载失败</span>
+            <el-button size="small" @click.stop="retryLoadImage(image)">重试</el-button>
+          </div>
           <!-- 选择圆圈 -->
           <div 
             class="select-circle"
@@ -671,6 +683,47 @@ import axios from 'axios'
 const datasetStore = useDatasetStore()
 const trainingStore = useTrainingStore()
 const wsStore = useWebSocketStore()
+
+// 图片加载失败处理
+const imageLoadFailed = ref(new Set<string>())
+const imageRetryCount = ref(new Map<string, number>())
+const MAX_RETRY = 3
+
+// 获取图片URL（带时间戳防止缓存问题）
+function getImageUrl(image: DatasetImage): string {
+  const retry = imageRetryCount.value.get(image.path) || 0
+  if (retry > 0) {
+    // 重试时添加时间戳避免缓存
+    return `${image.thumbnailUrl}${image.thumbnailUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+  }
+  return image.thumbnailUrl
+}
+
+// 图片加载失败处理
+function handleImageError(event: Event, image: DatasetImage) {
+  const retryCount = imageRetryCount.value.get(image.path) || 0
+  
+  if (retryCount < MAX_RETRY) {
+    // 自动重试
+    imageRetryCount.value.set(image.path, retryCount + 1)
+    const img = event.target as HTMLImageElement
+    // 强制重新加载
+    setTimeout(() => {
+      img.src = getImageUrl(image)
+    }, 500 * (retryCount + 1)) // 递增延迟
+  } else {
+    // 重试次数用完，标记为失败
+    imageLoadFailed.value.add(image.path)
+  }
+}
+
+// 手动重试加载图片
+function retryLoadImage(image: DatasetImage) {
+  imageLoadFailed.value.delete(image.path)
+  imageRetryCount.value.set(image.path, 0)
+  // 触发响应式更新
+  imageRetryCount.value = new Map(imageRetryCount.value)
+}
 
 // 缓存状态（从 WebSocket 获取实时进度）
 const cacheStatus = computed(() => wsStore.cacheStatus)
@@ -1917,6 +1970,31 @@ function formatSize(bytes: number): string {
       height: 100%;
       object-fit: cover;
       transition: transform var(--transition-fast);
+    }
+    
+    .image-error-overlay {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.85);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--el-color-warning);
+      font-size: 12px;
+      z-index: 5;
+      
+      .el-icon {
+        font-size: 32px;
+      }
+      
+      .el-button {
+        margin-top: 4px;
+      }
     }
     
     &:hover img {
