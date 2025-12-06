@@ -750,6 +750,7 @@ def get_training_status() -> Dict[str, Any]:
         }
     elif return_code == 0:
         state.add_log("训练完成", "success")
+        state.training_process = None  # 清除引用，防止重复添加日志
         return {"status": "completed", "running": False}
     else:
         # 获取详细错误信息
@@ -782,6 +783,7 @@ def get_training_status() -> Dict[str, Any]:
                 break
         
         state.add_log(f"{error_msg}: {hint}", "error")
+        state.training_process = None  # 清除引用，防止重复添加日志
         
         return {
             "status": "failed", 

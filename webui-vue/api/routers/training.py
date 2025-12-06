@@ -40,8 +40,8 @@ def get_default_config():
             "output_name": "zimage-lora",
             "learning_rate": 0.0001,
             "weight_decay": 0,
-            "lr_scheduler": "cosine_with_restarts",
-            "lr_warmup_steps": 100,
+            "lr_scheduler": "constant",  # 少样本训练推荐 constant，cosine 需谨慎设置 warmup
+            "lr_warmup_steps": 0,  # 默认不预热，少样本场景预热步数应 < 5% 总步数
             "lr_num_cycles": 1,
             # Standard 模式参数
             "lambda_fft": 0,
