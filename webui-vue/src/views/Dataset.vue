@@ -687,42 +687,47 @@ const wsStore = useWebSocketStore()
 // 图片加载失败处理
 const imageLoadFailed = ref(new Set<string>())
 const imageRetryCount = ref(new Map<string, number>())
-const MAX_RETRY = 3
+const MAX_RETRY = 2  // 减少自动重试次数
 
 // 获取图片URL（带时间戳防止缓存问题）
 function getImageUrl(image: DatasetImage): string {
   const retry = imageRetryCount.value.get(image.path) || 0
-  if (retry > 0) {
-    // 重试时添加时间戳避免缓存
-    return `${image.thumbnailUrl}${image.thumbnailUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
-  }
-  return image.thumbnailUrl
+  // 每次重试都添加不同的时间戳来绕过缓存
+  const cacheBuster = retry > 0 ? `&_t=${Date.now()}&_r=${retry}` : ''
+  return `${image.thumbnailUrl}${cacheBuster}`
 }
 
 // 图片加载失败处理
 function handleImageError(event: Event, image: DatasetImage) {
   const retryCount = imageRetryCount.value.get(image.path) || 0
+  console.log(`[Image] Load failed: ${image.filename}, retry: ${retryCount}/${MAX_RETRY}`)
   
   if (retryCount < MAX_RETRY) {
     // 自动重试
-    imageRetryCount.value.set(image.path, retryCount + 1)
+    const newRetry = retryCount + 1
+    imageRetryCount.value.set(image.path, newRetry)
     const img = event.target as HTMLImageElement
-    // 强制重新加载
+    // 强制重新加载，递增延迟
     setTimeout(() => {
-      img.src = getImageUrl(image)
-    }, 500 * (retryCount + 1)) // 递增延迟
+      const newUrl = getImageUrl(image)
+      console.log(`[Image] Retrying: ${newUrl}`)
+      img.src = newUrl
+    }, 1000 * newRetry) // 1s, 2s 延迟
   } else {
     // 重试次数用完，标记为失败
+    console.log(`[Image] Max retries reached: ${image.filename}`)
     imageLoadFailed.value.add(image.path)
   }
 }
 
-// 手动重试加载图片
+// 手动重试加载图片（重置重试计数，强制刷新）
 function retryLoadImage(image: DatasetImage) {
+  console.log(`[Image] Manual retry: ${image.filename}`)
   imageLoadFailed.value.delete(image.path)
-  imageRetryCount.value.set(image.path, 0)
-  // 触发响应式更新
+  imageRetryCount.value.delete(image.path)  // 完全重置
+  // 强制触发响应式更新
   imageRetryCount.value = new Map(imageRetryCount.value)
+  imageLoadFailed.value = new Set(imageLoadFailed.value)
 }
 
 // 缓存状态（从 WebSocket 获取实时进度）

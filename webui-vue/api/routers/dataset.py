@@ -8,6 +8,7 @@ import io
 import requests
 import asyncio
 import threading
+import urllib.parse
 from typing import Optional
 from pydantic import BaseModel
 
@@ -57,6 +58,8 @@ async def scan_dataset(request: DatasetScanRequest):
                 text_cache = file.parent / f"{file.stem}_zi_te.safetensors"
                 has_text_cache = text_cache.exists()
                 
+                # URL 编码路径，处理特殊字符（中文、空格等）
+                encoded_path = urllib.parse.quote(str(file), safe='')
                 images.append({
                     "path": str(file),
                     "filename": file.name,
@@ -66,7 +69,7 @@ async def scan_dataset(request: DatasetScanRequest):
                     "caption": caption,
                     "hasLatentCache": has_latent_cache,
                     "hasTextCache": has_text_cache,
-                    "thumbnailUrl": f"/api/dataset/thumbnail?path={file}"
+                    "thumbnailUrl": f"/api/dataset/thumbnail?path={encoded_path}"
                 })
             except Exception as e:
                 print(f"Error processing {file}: {e}")
@@ -219,23 +222,66 @@ async def upload_files(
 
 @router.get("/thumbnail")
 async def get_thumbnail(path: str):
-    """Get a thumbnail of an image"""
+    """Get a thumbnail of an image with improved error handling and caching"""
     from fastapi.responses import Response
     import io
+    import urllib.parse
     
-    img_path = Path(path)
+    # URL 解码路径
+    decoded_path = urllib.parse.unquote(path)
+    img_path = Path(decoded_path)
+    
     if not img_path.exists():
-        raise HTTPException(status_code=404, detail="Image not found")
+        print(f"[Thumbnail] File not found: {img_path}")
+        raise HTTPException(status_code=404, detail=f"Image not found: {decoded_path}")
     
     try:
         with Image.open(img_path) as img:
-            img.thumbnail((200, 200))
+            # 转换为 RGB 模式（处理 RGBA、P 等模式）
+            if img.mode in ('RGBA', 'LA', 'P'):
+                # 创建白色背景
+                background = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P':
+                    img = img.convert('RGBA')
+                background.paste(img, mask=img.split()[-1] if img.mode == 'RGBA' else None)
+                img = background
+            elif img.mode != 'RGB':
+                img = img.convert('RGB')
+            
+            # 生成缩略图
+            img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+            
             buffer = io.BytesIO()
-            img.save(buffer, format='JPEG', quality=85)
+            img.save(buffer, format='JPEG', quality=85, optimize=True)
             buffer.seek(0)
-            return Response(content=buffer.read(), media_type="image/jpeg")
+            
+            # 添加缓存头，缓存 1 小时
+            return Response(
+                content=buffer.read(), 
+                media_type="image/jpeg",
+                headers={
+                    "Cache-Control": "public, max-age=3600",
+                    "X-Content-Type-Options": "nosniff"
+                }
+            )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"[Thumbnail] Error processing {img_path}: {e}")
+        import traceback
+        traceback.print_exc()
+        # 返回一个占位图而不是报错
+        try:
+            # 生成一个简单的灰色占位图
+            placeholder = Image.new('RGB', (200, 200), (64, 64, 64))
+            buffer = io.BytesIO()
+            placeholder.save(buffer, format='JPEG', quality=85)
+            buffer.seek(0)
+            return Response(
+                content=buffer.read(), 
+                media_type="image/jpeg",
+                headers={"X-Thumbnail-Error": "true"}
+            )
+        except:
+            raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/image")
 async def get_image(path: str):
