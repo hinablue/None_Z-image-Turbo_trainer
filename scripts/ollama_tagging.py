@@ -169,16 +169,14 @@ def generate_caption(
         caption = ""
         
         # 提取响应
-        if "response" in data:
+        if "response" in data and data["response"].strip():
             caption = data["response"].strip()
         
-        # 如果开启思考模式但 response 为空，尝试从 thinking 提取
-        if not caption and enable_think and "thinking" in data and data["thinking"]:
-            thinking = data["thinking"].strip()
-            # 取最后一段作为结果
-            paragraphs = [p.strip() for p in thinking.split('\n\n') if p.strip()]
-            if paragraphs:
-                caption = paragraphs[-1]
+        # 如果 response 为空但有 thinking，使用完整的 thinking 内容
+        # qwen3-vl 等模型会把结果放在 thinking 字段
+        if not caption and "thinking" in data and data["thinking"]:
+            caption = data["thinking"].strip()
+            logger.info(f"使用 thinking 字段内容 ({len(caption)} chars)")
         
         if not caption:
             logger.warning(f"空响应: {img_path.name}")
