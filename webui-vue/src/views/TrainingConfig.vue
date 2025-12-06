@@ -501,8 +501,8 @@
                   <el-icon class="help-icon"><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
-              <el-slider v-model="config.advanced.max_grad_norm" :min="0" :max="5" :step="0.1" :show-tooltip="false" class="slider-flex" />
-              <el-input-number v-model="config.advanced.max_grad_norm" :min="0" :step="0.1" controls-position="right" class="input-fixed" />
+              <el-slider v-model="config.advanced.max_grad_norm" :min="0" :max="20" :step="0.5" :show-tooltip="false" class="slider-flex" />
+              <el-input-number v-model="config.advanced.max_grad_norm" :min="0" :max="20" :step="0.5" controls-position="right" class="input-fixed" />
             </div>
             <div class="control-row">
               <span class="label">
