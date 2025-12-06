@@ -559,8 +559,8 @@
         
         <el-form-item label="思考模式">
           <el-switch v-model="ollamaConfig.enableThink" />
-          <span class="switch-label">启用模型思考（deepseek/qwen3 等支持）</span>
-          <div class="form-hint warning">⚠️ 大部分视觉模型不支持思考模式，如果标注失败请关闭此选项</div>
+          <span class="switch-label">启用模型思考（qwen3-vl 等需要开启）</span>
+          <div class="form-hint">💡 qwen3-vl 默认需要开启；llava/moondream 等传统模型请关闭</div>
         </el-form-item>
       </el-form>
       
@@ -912,7 +912,7 @@ const ollamaConfig = ref({
   maxLongEdge: 1024,
   skipExisting: true,
   triggerWord: '',  // 触发词，添加到每个标注开头
-  enableThink: false  // 是否启用思考模式（部分模型支持）
+  enableThink: true  // 默认开启思考模式（qwen3-vl 等模型需要）
 })
 const ollamaStatus = ref({
   running: false,

@@ -536,17 +536,50 @@ def generate_caption_ollama_sync(img_path: Path, ollama_url: str, model: str, pr
         print(f"[Ollama] Response keys: {data.keys()}")
         
         caption = ""
+        has_thinking = "thinking" in data and data["thinking"]
         
         # 检查 response 字段
         if "response" in data:
             caption = data["response"].strip()
             print(f"[Ollama] Raw response ({len(caption)} chars): {caption[:200] if caption else '(empty)'}...")
         
-        # 如果 response 为空但有 thinking 字段，说明模型启用了思考模式但没输出结果
-        if not caption and "thinking" in data and data["thinking"]:
-            print(f"[Ollama] Warning: Model returned thinking but no response!")
-            print(f"[Ollama] Thinking content ({len(data['thinking'])} chars): {data['thinking'][:200]}...")
-            print(f"[Ollama] Tip: 请在前端关闭「启用思考模式」，或使用 /no_think 前缀")
+        # 如果 response 为空但有 thinking 字段
+        if not caption and has_thinking:
+            thinking_text = data["thinking"]
+            print(f"[Ollama] Thinking content ({len(thinking_text)} chars)")
+            
+            if enable_think:
+                # 用户开启了思考模式，模型输出了思考但没有最终答案
+                # 这种情况下，思考内容可能就是结果（某些模型如此）
+                # 尝试清理思考内容作为 caption
+                import re
+                # 移除常见的思考前缀
+                cleaned = thinking_text.strip()
+                # 移除思考过程的开头语
+                cleaned = re.sub(r'^(好的|让我|我来|首先|我需要|接下来|然后)[，,。.：:\s]*', '', cleaned)
+                # 取最后一段有意义的内容（通常是结论）
+                paragraphs = [p.strip() for p in cleaned.split('\n\n') if p.strip()]
+                if paragraphs:
+                    # 取最后一段，如果太短就多取几段
+                    last_para = paragraphs[-1]
+                    if len(last_para) < 50 and len(paragraphs) > 1:
+                        caption = '\n\n'.join(paragraphs[-2:])
+                    else:
+                        caption = last_para
+                    print(f"[Ollama] Extracted from thinking: {caption[:100]}...")
+                else:
+                    print(f"[Ollama] Warning: Could not extract useful content from thinking")
+                    return None
+            else:
+                # 用户关闭了思考模式，但模型仍然返回了 thinking
+                print(f"[Ollama] Warning: Model requires thinking mode!")
+                print(f"[Ollama] Tip: 此模型需要开启「思考模式」才能正常工作，请在前端开启")
+                return None
+        
+        # 如果开启了思考但模型没返回 thinking 字段，可能模型不支持
+        if enable_think and not has_thinking and not caption:
+            print(f"[Ollama] Warning: Model may not support thinking mode")
+            print(f"[Ollama] Tip: 此模型可能不支持思考模式，请尝试关闭「思考模式」")
             return None
         
         if caption:
