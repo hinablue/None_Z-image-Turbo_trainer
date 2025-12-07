@@ -127,7 +127,9 @@ class ACRFTrainer:
         
         # 2. 获取对应的 sigma 并添加抖动
         # 抖动用于"增厚"流形，防止过拟合于精确的锚点
-        base_sigmas = self.anchor_sigmas.to(device)[indices]
+        # 确保 dtype 与 latents 一致，避免混合精度问题
+        dtype = latents.dtype
+        base_sigmas = self.anchor_sigmas.to(device=device, dtype=dtype)[indices]
         jitter = torch.randn_like(base_sigmas) * jitter_scale
         sampled_sigmas = (base_sigmas + jitter).clamp(0.001, 0.999) # 避免 0 和 1
         
@@ -218,7 +220,8 @@ class ACRFTrainer:
             # 计算 FFT Loss
             loss_fft = self._compute_fft_loss(pred_x0, target_x0)
         else:
-            loss_fft = torch.tensor(0.0, device=model_output.device)
+            # 保持与 model_output 相同的 dtype，避免混合精度问题
+            loss_fft = torch.zeros(1, device=model_output.device, dtype=model_output.dtype).squeeze()
         
         # 4. 总损失
         total_loss = (
@@ -261,8 +264,9 @@ class ACRFTrainer:
             
             # 2. 构建高通滤波器
             # 计算归一化频率距离 [0, 1]
-            freq_y = torch.linspace(-0.5, 0.5, H, device=pred.device).view(-1, 1)
-            freq_x = torch.linspace(-0.5, 0.5, W, device=pred.device).view(1, -1)
+            # 使用 float32 计算滤波器（FFT 也是 float32），避免类型问题
+            freq_y = torch.linspace(-0.5, 0.5, H, device=pred.device, dtype=torch.float32).view(-1, 1)
+            freq_x = torch.linspace(-0.5, 0.5, W, device=pred.device, dtype=torch.float32).view(1, -1)
             freq_dist = torch.sqrt(freq_y ** 2 + freq_x ** 2)  # [0, ~0.707]
             freq_dist = freq_dist / 0.707  # 归一化到 [0, 1]
             
