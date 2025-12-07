@@ -135,17 +135,24 @@ class FrequencyAwareLoss(nn.Module):
             total_loss: 总损失
             components (optional): 各分量 loss 字典
         """
+        # 保存原始 dtype，确保所有计算结果都转换回来
+        original_dtype = pred_v.dtype
+        
+        # 转换为 float32 进行计算（避免混合精度问题）
+        pred_v_fp32 = pred_v.float()
+        target_v_fp32 = target_v.float()
+        noisy_latents_fp32 = noisy_latents.float()
+        
         # 1. 基础 Loss（保证模型不崩）
-        base_loss = F.mse_loss(pred_v, target_v, reduction="mean")
+        base_loss = F.mse_loss(pred_v_fp32, target_v_fp32, reduction="mean")
         
         # 2. 计算 sigma（Z-Image: sigma = timestep / 1000）
-        # 保持输入张量的 dtype，避免混合精度问题
-        sigmas = timesteps.to(dtype=pred_v.dtype) / num_train_timesteps
+        sigmas = timesteps.float() / num_train_timesteps
         
         # 3. 反推 x0（在干净 latent 空间做频域分析）
-        # 注意：必须保持梯度流，因为要优化 pred_v
-        pred_x0 = self.reconstruct_x0_from_v(pred_v, noisy_latents, sigmas)
-        target_x0 = self.reconstruct_x0_from_v(target_v, noisy_latents, sigmas)
+        sigma_broadcast = sigmas.view(-1, 1, 1, 1)
+        pred_x0 = noisy_latents_fp32 - sigma_broadcast * pred_v_fp32
+        target_x0 = noisy_latents_fp32 - sigma_broadcast * target_v_fp32
         
         # 4. 频域分离
         pred_low = self.get_low_freq(pred_x0)
@@ -155,24 +162,17 @@ class FrequencyAwareLoss(nn.Module):
         target_high = target_x0 - target_low
         
         # 5. 高频 Loss：L1（保持边缘锐利）
-        # L1 倾向于稀疏解，能产生更锐利的边缘
-        # MSE (L2) 倾向于平均值，会导致模糊
         loss_hf = F.l1_loss(pred_high, target_high, reduction="mean")
         
         # 6. 低频 Loss：Cosine Similarity（锁定方向）
-        # 只锁方向不锁模长，允许一定的亮度自由度
         pred_low_flat = pred_low.view(pred_low.shape[0], -1)
         target_low_flat = target_low.view(target_low.shape[0], -1)
         
-        # 确保 cosine_similarity 结果保持正确的 dtype
         cos_sim = F.cosine_similarity(pred_low_flat, target_low_flat, dim=1)
-        # 使用张量减法避免 Python float 导致的类型提升
-        one = torch.ones(1, device=pred_v.device, dtype=pred_v.dtype)
-        loss_lf_direction = (one - cos_sim).mean()
+        loss_lf_direction = (1.0 - cos_sim).mean()
         
         # 可选：低频幅度约束（防止发灰）
-        # 保持与 pred_v 相同的 dtype，避免混合精度问题
-        loss_lf_magnitude = torch.zeros(1, device=pred_v.device, dtype=pred_v.dtype).squeeze()
+        loss_lf_magnitude = torch.zeros(1, device=pred_v.device, dtype=torch.float32).squeeze()
         if self.lf_magnitude_weight > 0:
             pred_norm = pred_low_flat.norm(dim=1)
             target_norm = target_low_flat.norm(dim=1)
@@ -180,20 +180,23 @@ class FrequencyAwareLoss(nn.Module):
         
         loss_lf = loss_lf_direction + self.lf_magnitude_weight * loss_lf_magnitude
         
-        # 7. 总 Loss
+        # 7. 总 Loss（在 float32 下计算，然后转回原始 dtype）
         total_loss = (
             self.base_weight * base_loss +
             self.alpha_hf * loss_hf +
             self.beta_lf * loss_lf
         )
         
+        # 转换回原始 dtype
+        total_loss = total_loss.to(original_dtype)
+        
         if return_components:
             components = {
-                "base_loss": base_loss,
-                "loss_hf": loss_hf,
-                "loss_lf": loss_lf,
-                "loss_lf_direction": loss_lf_direction,
-                "loss_lf_magnitude": loss_lf_magnitude,
+                "base_loss": base_loss.to(original_dtype),
+                "loss_hf": loss_hf.to(original_dtype),
+                "loss_lf": loss_lf.to(original_dtype),
+                "loss_lf_direction": loss_lf_direction.to(original_dtype),
+                "loss_lf_magnitude": loss_lf_magnitude.to(original_dtype),
                 "total_loss": total_loss,
             }
             return total_loss, components

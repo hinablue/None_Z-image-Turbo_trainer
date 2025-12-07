@@ -346,16 +346,24 @@ class LatentStyleStructureLoss(StyleStructureLoss):
             noisy_latents: 加噪后的 latents x_t
             timesteps: 时间步
         """
-        # 基础 loss
-        loss_base = F.mse_loss(pred_v, target_v)
+        # 保存原始 dtype，确保所有计算结果都转换回来
+        original_dtype = pred_v.dtype
         
-        # 计算 sigma（保持输入张量的 dtype，避免混合精度问题）
-        sigmas = timesteps.to(dtype=pred_v.dtype) / num_train_timesteps
+        # 转换为 float32 进行计算（避免混合精度问题）
+        pred_v_fp32 = pred_v.float()
+        target_v_fp32 = target_v.float()
+        noisy_latents_fp32 = noisy_latents.float()
+        
+        # 基础 loss
+        loss_base = F.mse_loss(pred_v_fp32, target_v_fp32)
+        
+        # 计算 sigma
+        sigmas = timesteps.float() / num_train_timesteps
         sigma_broadcast = sigmas.view(-1, 1, 1, 1)
         
         # 反推 x0
-        pred_x0 = noisy_latents - sigma_broadcast * pred_v
-        target_x0 = noisy_latents - sigma_broadcast * target_v
+        pred_x0 = noisy_latents_fp32 - sigma_broadcast * pred_v_fp32
+        target_x0 = noisy_latents_fp32 - sigma_broadcast * target_v_fp32
         
         # 在 Latent 空间近似计算
         # Channel 0 近似亮度，Channel 1-3 近似色彩
@@ -369,9 +377,7 @@ class LatentStyleStructureLoss(StyleStructureLoss):
         pred_L_flat = pred_L.view(pred_L.shape[0], -1)
         target_L_flat = target_L.view(target_L.shape[0], -1)
         cos_sim = F.cosine_similarity(pred_L_flat, target_L_flat, dim=1).mean()
-        # 使用张量减法避免 Python float 导致的类型提升
-        one = torch.ones(1, device=pred_v.device, dtype=pred_v.dtype)
-        loss_struct = one.squeeze() - cos_sim
+        loss_struct = 1.0 - cos_sim
         
         # 2. 光影学习 (Channel 0 统计量)
         loss_light = self.moments_loss(pred_L, target_L)
@@ -386,7 +392,7 @@ class LatentStyleStructureLoss(StyleStructureLoss):
         target_high = target_L - target_low
         loss_tex = F.l1_loss(pred_high, target_high)
         
-        # 总损失
+        # 总损失（在 float32 下计算，然后转回原始 dtype）
         total_loss = (
             self.lambda_base * loss_base +
             self.lambda_struct * loss_struct +
@@ -395,14 +401,17 @@ class LatentStyleStructureLoss(StyleStructureLoss):
             self.lambda_tex * loss_tex
         )
         
+        # 转换回原始 dtype
+        total_loss = total_loss.to(original_dtype)
+        
         if return_components:
             components = {
-                "loss_base": loss_base,
-                "loss_struct": loss_struct,
-                "loss_light": loss_light,
-                "loss_color": loss_color,
-                "loss_tex": loss_tex,
-                "cos_sim": cos_sim,
+                "loss_base": loss_base.to(original_dtype),
+                "loss_struct": loss_struct.to(original_dtype),
+                "loss_light": loss_light.to(original_dtype),
+                "loss_color": loss_color.to(original_dtype),
+                "loss_tex": loss_tex.to(original_dtype),
+                "cos_sim": cos_sim.to(original_dtype),
                 "total_loss": total_loss,
             }
             return total_loss, components
