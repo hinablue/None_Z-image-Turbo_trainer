@@ -24,13 +24,19 @@ def get_default_config():
     """Get default training configuration"""
     return {
         "name": "default",
+        # 模型类型：zimage, longcat, flux (未来支持)
+        "model_type": "zimage",
         "acrf": {
             "turbo_steps": 10,
             "shift": 3.0,
             "jitter_scale": 0.02,
             # Min-SNR 加权参数（所有 loss 模式通用）
             "snr_gamma": 5.0,
-            "snr_floor": 0.1
+            "snr_floor": 0.1,
+            # 是否使用锚点采样
+            "use_anchor": True,
+            # 动态 shift (LongCat 专用)
+            "use_dynamic_shifting": True
         },
         "network": {
             "dim": 16,
@@ -369,31 +375,44 @@ async def start_training(config: Dict[str, Any]):
         
         state.add_log(f"缓存检查通过: {cache_info['latent_cached']} latent, {cache_info['text_cached']} text", "info")
         
+        # 获取模型类型
+        model_type = config.get("model_type", "zimage")
+        
         # 生成 TOML 配置文件
         config_path = CONFIGS_DIR / "current_training.toml"
-        toml_content = generate_acrf_toml_config(config)
+        toml_content = generate_training_toml_config(config, model_type)
         
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(toml_content)
         
-        state.add_log(f"AC-RF 配置已生成: {config_path}", "info")
+        state.add_log(f"训练配置已生成: {config_path} (模型: {model_type})", "info")
         
         # 构建 accelerate launch 命令
-        # 使用 scripts/train_acrf.py (AC-RF 训练脚本)
         python_exe = sys.executable
-        train_script = PROJECT_ROOT / "scripts" / "train_acrf.py"
-        
         mixed_precision = config.get("advanced", {}).get("mixed_precision", "bf16")
         
-        cmd = [
-            python_exe, "-m", "accelerate.commands.launch",
-            "--mixed_precision", mixed_precision,
-            str(train_script),
-            "--config", str(config_path)
-        ]
+        # 根据模型类型选择训练脚本
+        if model_type == "zimage":
+            train_script = PROJECT_ROOT / "scripts" / "train_acrf.py"
+            cmd = [
+                python_exe, "-m", "accelerate.commands.launch",
+                "--mixed_precision", mixed_precision,
+                str(train_script),
+                "--config", str(config_path)
+            ]
+        else:
+            # 使用通用加速训练脚本
+            train_script = PROJECT_ROOT / "scripts" / "train_turbo.py"
+            cmd = [
+                python_exe, "-m", "accelerate.commands.launch",
+                "--mixed_precision", mixed_precision,
+                str(train_script),
+                "--model_type", model_type,
+                "--config", str(config_path)
+            ]
         
         state.add_log(f"启动命令: {' '.join(cmd)}", "info")
-        state.add_log(f"混合精度: {mixed_precision}", "info")
+        state.add_log(f"模型类型: {model_type}, 混合精度: {mixed_precision}", "info")
         
         # 启动训练进程
         env = os.environ.copy()
@@ -412,13 +431,15 @@ async def start_training(config: Dict[str, Any]):
             creationflags=_get_subprocess_flags()
         )
         
-        state.add_log(f"AC-RF 训练进程已启动 (PID: {state.training_process.pid})", "success")
+        model_name = {"zimage": "Z-Image", "longcat": "LongCat-Image", "flux": "FLUX"}.get(model_type, model_type)
+        state.add_log(f"{model_name} 训练进程已启动 (PID: {state.training_process.pid})", "success")
         
         return {
             "success": True,
-            "message": "AC-RF 训练已启动",
+            "message": f"{model_name} 训练已启动",
             "pid": state.training_process.pid,
-            "config_path": str(config_path)
+            "config_path": str(config_path),
+            "model_type": model_type
         }
         
     except Exception as e:
@@ -426,23 +447,32 @@ async def start_training(config: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"启动训练失败: {str(e)}")
 
 
-def generate_acrf_toml_config(config: Dict[str, Any]) -> str:
+def generate_training_toml_config(config: Dict[str, Any], model_type: str = "zimage") -> str:
     """
-    将前端配置转换为 AC-RF 训练 TOML 格式（包含 dataset 配置）
+    将前端配置转换为训练 TOML 格式（支持多模型）
     
-    匹配 scripts/train_acrf.py 的参数格式
-    所有配置合并到一个 TOML 文件中
+    Args:
+        config: 前端配置
+        model_type: 模型类型 (zimage, longcat, flux)
+    
+    Returns:
+        TOML 配置字符串
     """
     
     # 获取数据集配置
     dataset_cfg = config.get("dataset", {})
     datasets = dataset_cfg.get("datasets", [])
     
+    model_names = {"zimage": "Z-Image", "longcat": "LongCat-Image", "flux": "FLUX"}
+    model_name = model_names.get(model_type, model_type)
+    
     toml_lines = [
-        "# Z-Image AC-RF 训练配置 (自动生成)",
+        f"# {model_name} 训练配置 (自动生成)",
         f"# 生成时间: {datetime.now().isoformat()}",
+        f"# 模型类型: {model_type}",
         "",
         "[model]",
+        f'model_type = "{model_type}"',
         f'dit = "{str(MODEL_PATH / "transformer").replace(chr(92), "/")}"',
         f'output_dir = "{str(OUTPUT_BASE_DIR).replace(chr(92), "/")}"',
         "",
@@ -452,6 +482,8 @@ def generate_acrf_toml_config(config: Dict[str, Any]) -> str:
         f"jitter_scale = {config.get('acrf', {}).get('jitter_scale', 0.02)}",
         f"snr_gamma = {config.get('acrf', {}).get('snr_gamma', 5.0)}",
         f"snr_floor = {config.get('acrf', {}).get('snr_floor', 0.1)}",
+        f"use_anchor = {'true' if config.get('acrf', {}).get('use_anchor', True) else 'false'}",
+        f"use_dynamic_shifting = {'true' if config.get('acrf', {}).get('use_dynamic_shifting', True) else 'false'}",
         "",
         "[lora]",
         f"network_dim = {config.get('network', {}).get('dim', 8)}",

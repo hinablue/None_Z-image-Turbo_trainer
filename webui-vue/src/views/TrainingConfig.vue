@@ -47,6 +47,44 @@
     <el-card class="config-content-card glass-card" v-loading="loading">
       <el-collapse v-model="activeNames" class="config-collapse">
 
+        <!-- 1. 模型类型选择 -->
+        <el-collapse-item name="model">
+          <template #title>
+            <div class="collapse-title">
+              <el-icon><Cpu /></el-icon>
+              <span>模型类型</span>
+              <el-tag :type="modelTagType" size="small" style="margin-left: 10px">{{ modelDisplayName }}</el-tag>
+            </div>
+          </template>
+          <div class="collapse-content">
+            <div class="model-type-cards">
+              <div 
+                v-for="model in availableModels" 
+                :key="model.value"
+                :class="['model-card', { active: config.model_type === model.value, disabled: model.disabled }]"
+                @click="!model.disabled && selectModelType(model.value)"
+              >
+                <div class="model-icon">{{ model.icon }}</div>
+                <div class="model-info">
+                  <div class="model-name">{{ model.label }}</div>
+                  <div class="model-desc">{{ model.description }}</div>
+                </div>
+                <el-tag v-if="model.tag" :type="model.tagType" size="small">{{ model.tag }}</el-tag>
+              </div>
+            </div>
+            <el-alert 
+              v-if="config.model_type !== 'zimage'" 
+              type="info" 
+              :closable="false"
+              show-icon
+              style="margin-top: 12px"
+            >
+              <template #title>
+                {{ config.model_type === 'longcat' ? 'LongCat-Image 需要配置模型路径' : '该模型类型即将支持' }}
+              </template>
+            </el-alert>
+          </div>
+        </el-collapse-item>
 
         <!-- 2. AC-RF 参数 -->
         <el-collapse-item name="acrf">
@@ -532,15 +570,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Setting, Refresh, Check, FolderOpened, DataAnalysis, Grid, TrendCharts, Files, Tools, Plus, Delete, Document, InfoFilled, QuestionFilled, Promotion } from '@element-plus/icons-vue'
+import { Setting, Refresh, Check, FolderOpened, DataAnalysis, Grid, TrendCharts, Files, Tools, Plus, Delete, Document, InfoFilled, QuestionFilled, Promotion, Cpu } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
 
-const activeNames = ref(['acrf', 'lora', 'training', 'dataset', 'advanced'])
+const activeNames = ref(['model', 'acrf', 'lora', 'training', 'dataset', 'advanced'])
 const loading = ref(false)
 const saving = ref(false)
 const selectedPreset = ref('')
@@ -564,17 +602,66 @@ const systemPaths = ref({
   output_base_dir: ''
 })
 
+// 可用模型列表
+const availableModels = ref([
+  {
+    value: 'zimage',
+    label: 'Z-Image (Turbo)',
+    icon: '⚡',
+    description: '10 步加速推理，原生 Turbo 模型',
+    tag: '推荐',
+    tagType: 'success',
+    disabled: false
+  },
+  {
+    value: 'longcat',
+    label: 'LongCat-Image',
+    icon: '🐱',
+    description: '基于 FLUX 架构，高质量生成',
+    tag: '新',
+    tagType: 'warning',
+    disabled: false
+  },
+  {
+    value: 'flux',
+    label: 'FLUX',
+    icon: '🌊',
+    description: '即将支持',
+    tag: '即将',
+    tagType: 'info',
+    disabled: true
+  }
+])
+
+// 模型类型显示
+const modelDisplayName = computed(() => {
+  const model = availableModels.value.find(m => m.value === config.value.model_type)
+  return model?.label || 'Z-Image'
+})
+
+const modelTagType = computed(() => {
+  const model = availableModels.value.find(m => m.value === config.value.model_type)
+  return model?.tagType || 'primary'
+})
+
+function selectModelType(type: string) {
+  config.value.model_type = type
+}
+
 // 默认配置结构
 function getDefaultConfig() {
   return {
     name: 'default',
+    model_type: 'zimage',  // 模型类型
     acrf: {
       turbo_steps: 10,
       shift: 3.0,
       jitter_scale: 0.02,
       // Min-SNR 加权参数（所有 loss 模式通用）
       snr_gamma: 5.0,
-      snr_floor: 0.1
+      snr_floor: 0.1,
+      use_anchor: true,
+      use_dynamic_shifting: true
     },
     network: {
       dim: 8,
@@ -1141,5 +1228,62 @@ function formatLearningRate(value: number): string {
 .empty-datasets p {
   margin: 0;
   font-size: 13px;
+}
+
+/* 模型类型卡片样式 */
+.model-type-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.model-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border: 2px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: var(--el-bg-color);
+}
+
+.model-card:hover:not(.disabled) {
+  border-color: var(--el-color-primary-light-5);
+  background: var(--el-color-primary-light-9);
+}
+
+.model-card.active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  box-shadow: 0 0 0 3px var(--el-color-primary-light-7);
+}
+
+.model-card.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-icon {
+  font-size: 32px;
+  flex-shrink: 0;
+}
+
+.model-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-name {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.model-desc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
 }
 </style>
