@@ -1,14 +1,16 @@
 # Z-Image AC-RF 训练配置 (自动生成)
-# 生成时间: 2025-12-07T08:29:21.605252
+# 生成时间: 2025-12-08T12:10:11.364145
 
 [model]
 dit = "D:/AI/None_Z-image-Turbo_trainer/zimage_models/transformer"
 output_dir = "D:/AI/None_Z-image-Turbo_trainer/output"
 
 [acrf]
-turbo_steps = 10
+turbo_steps = 8
 shift = 3
 jitter_scale = 0.02
+snr_gamma = 5
+snr_floor = 0.1
 
 [lora]
 network_dim = 16
@@ -24,8 +26,7 @@ lr_warmup_steps = 100
 lr_num_cycles = 1
 lambda_fft = 0
 lambda_cosine = 0
-snr_gamma = 5
-loss_mode = "unified"
+loss_mode = "standard"
 alpha_hf = 1
 beta_lf = 0.2
 lambda_struct = 1
@@ -53,5 +54,5 @@ enable_bucket = true
 
 [[dataset.sources]]
 cache_directory = "D:/AI/None_Z-image-Turbo_trainer/datasets/1"
-num_repeats = 100
+num_repeats = 1
 resolution_limit = 1024
