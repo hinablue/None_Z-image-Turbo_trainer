@@ -637,10 +637,6 @@ def main():
                 
                 # 反向传播
                 accelerator.backward(loss)
-                
-                # 即时进度反馈（每步都打印，让用户知道训练在进行）
-                batch_loss = loss.item()
-                print(f"[BATCH] epoch={epoch+1}/{args.num_train_epochs} batch={step+1}/{len(dataloader)} loss={batch_loss:.4f}", flush=True)
             
             # 优化器步进
             if accelerator.sync_gradients:
