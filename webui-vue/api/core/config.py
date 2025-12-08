@@ -19,12 +19,65 @@ load_dotenv(PROJECT_ROOT / ".env")
 # 从 .env 读取路径配置 (支持相对路径)
 def _resolve_path(env_key: str, default: str) -> Path:
     """解析路径，支持相对路径（相对于项目根目录）"""
-    p = Path(os.getenv(env_key, default))
+    value = os.getenv(env_key, "")
+    if not value:
+        value = default
+    p = Path(value)
     if not p.is_absolute():
         p = PROJECT_ROOT / p
     return p
 
+# ============================================================================
+# Z-Image 模型路径
+# ============================================================================
 MODEL_PATH = _resolve_path("MODEL_PATH", "./zimage_models")
+VAE_PATH = _resolve_path("VAE_PATH", "") or MODEL_PATH / "vae"
+TEXT_ENCODER_PATH = _resolve_path("TEXT_ENCODER_PATH", "") or MODEL_PATH / "text_encoder"
+TRANSFORMER_PATH = _resolve_path("TRANSFORMER_PATH", "") or MODEL_PATH / "transformer"
+
+# ============================================================================
+# LongCat-Image 模型路径
+# ============================================================================
+LONGCAT_MODEL_PATH = _resolve_path("LONGCAT_MODEL_PATH", "./longcat_models")
+LONGCAT_VAE_PATH = _resolve_path("LONGCAT_VAE_PATH", "") or LONGCAT_MODEL_PATH / "vae"
+LONGCAT_TEXT_ENCODER_PATH = _resolve_path("LONGCAT_TEXT_ENCODER_PATH", "") or LONGCAT_MODEL_PATH / "text_encoder"
+LONGCAT_TRANSFORMER_PATH = _resolve_path("LONGCAT_TRANSFORMER_PATH", "") or LONGCAT_MODEL_PATH / "transformer"
+
+# ============================================================================
+# 多模型路径映射
+# ============================================================================
+MODEL_PATHS = {
+    "zimage": {
+        "base": MODEL_PATH,
+        "vae": VAE_PATH,
+        "text_encoder": TEXT_ENCODER_PATH,
+        "transformer": TRANSFORMER_PATH,
+    },
+    "longcat": {
+        "base": LONGCAT_MODEL_PATH,
+        "vae": LONGCAT_VAE_PATH,
+        "text_encoder": LONGCAT_TEXT_ENCODER_PATH,
+        "transformer": LONGCAT_TRANSFORMER_PATH,
+    }
+}
+
+def get_model_path(model_type: str, component: str = "base") -> Path:
+    """获取指定模型的路径
+    
+    Args:
+        model_type: 模型类型 (zimage, longcat)
+        component: 组件类型 (base, vae, text_encoder, transformer)
+    
+    Returns:
+        对应路径
+    """
+    if model_type not in MODEL_PATHS:
+        model_type = "zimage"
+    return MODEL_PATHS[model_type].get(component, MODEL_PATHS[model_type]["base"])
+
+# ============================================================================
+# 其他路径
+# ============================================================================
 LORA_PATH = _resolve_path("LORA_PATH", "./output")
 DATASETS_DIR = _resolve_path("DATASET_PATH", "./datasets")
 

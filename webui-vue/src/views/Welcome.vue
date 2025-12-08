@@ -183,10 +183,16 @@
           </div>
         </div>
 
+        <!-- 模型路径显示 -->
+        <div class="model-path-info" v-if="currentModelStatus.path">
+          <span class="path-label">配置路径:</span>
+          <code class="path-value" :title="currentModelStatus.path">{{ currentModelStatus.path }}</code>
+        </div>
+
         <!-- 未检测状态 -->
         <div v-if="!currentModelStatus.summary && !loadingModel" class="model-unchecked">
           <el-icon><WarningFilled /></el-icon>
-          <span>未检测到模型，请先配置模型路径</span>
+          <span>未检测到模型，请配置 .env 中的模型路径</span>
         </div>
 
         <div v-if="loadingModel" class="loading-state">
@@ -254,8 +260,8 @@ const loadingModel = ref(false)
 
 // 每个模型的状态
 const modelStatusMap = ref<Record<string, any>>({
-  zimage: { exists: false, details: null, summary: null },
-  longcat: { exists: false, details: null, summary: null }
+  zimage: { exists: false, details: null, summary: null, path: '' },
+  longcat: { exists: false, details: null, summary: null, path: '' }
 })
 
 const currentModelStatus = computed(() => modelStatusMap.value[selectedModelType.value] || { exists: false, details: null, summary: null })
@@ -824,6 +830,31 @@ refreshModelStatus()
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.model-path-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-lighter);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.model-path-info .path-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.model-path-info .path-value {
+  color: var(--text-primary);
+  font-family: 'Consolas', 'Monaco', monospace;
+  background: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .model-unchecked {

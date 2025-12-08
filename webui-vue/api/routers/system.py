@@ -7,7 +7,7 @@ import hashlib
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from core.config import PROJECT_ROOT, MODEL_PATH
+from core.config import PROJECT_ROOT, MODEL_PATH, LONGCAT_MODEL_PATH, MODEL_PATHS, get_model_path
 from core import state
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -540,30 +540,8 @@ async def get_model_status(model_type: str = "zimage"):
         spec = MODEL_SPECS[model_type]
         expected_files = spec["expected_files"]
         
-        # 确定模型路径
-        if model_type == "zimage":
-            model_path = Path(MODEL_PATH)
-        elif model_type == "longcat":
-            # LongCat 使用环境变量或默认路径
-            longcat_path = os.environ.get("LONGCAT_MODEL_PATH", "")
-            if not longcat_path:
-                # 尝试常见路径
-                default_path = spec.get("default_path", "longcat_models")
-                possible_paths = [
-                    PROJECT_ROOT / default_path,  # 项目内的下载目录
-                    Path("D:/AI/LongCat-Image/models"),
-                    Path(MODEL_PATH).parent / "longcat-image",
-                ]
-                for p in possible_paths:
-                    if p.exists():
-                        longcat_path = str(p)
-                        break
-                # 如果都不存在，使用默认下载目录
-                if not longcat_path:
-                    longcat_path = str(PROJECT_ROOT / default_path)
-            model_path = Path(longcat_path)
-        else:
-            model_path = Path(MODEL_PATH)
+        # 使用统一的模型路径配置
+        model_path = get_model_path(model_type, "base")
         
         components = {}
         overall_valid = True
@@ -699,13 +677,8 @@ async def download_model(model_type: str = "zimage"):
         if not model_id:
             raise HTTPException(status_code=400, detail=f"Model {model_type} does not support auto-download")
         
-        # 确定下载目录
-        if model_type == "zimage":
-            model_path = Path(MODEL_PATH)
-        else:
-            # 其他模型使用独立目录
-            default_path = spec.get("default_path", f"{model_type}_models")
-            model_path = PROJECT_ROOT / default_path
+        # 使用统一的模型路径配置
+        model_path = get_model_path(model_type, "base")
         
         model_path.mkdir(parents=True, exist_ok=True)
         
