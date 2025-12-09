@@ -149,48 +149,49 @@
             <span class="value">{{ currentConfig.training?.lr_warmup_steps ?? 0 }}</span>
           </div>
           <div class="preview-item">
-            <span class="label">Lambda FFT</span>
-            <span class="value">{{ currentConfig.training?.lambda_fft ?? 0 }}</span>
+            <span class="label">Lambda L1</span>
+            <span class="value">{{ currentConfig.training?.lambda_l1 ?? 1.0 }}</span>
           </div>
           <div class="preview-item">
             <span class="label">Lambda Cosine</span>
-            <span class="value">{{ currentConfig.training?.lambda_cosine ?? 0 }}</span>
+            <span class="value">{{ currentConfig.training?.lambda_cosine ?? 0.1 }}</span>
+          </div>
+          <div class="preview-item" v-if="currentConfig.training?.loss_mode === 'mixed'">
+            <span class="label">Lambda Freq</span>
+            <span class="value">{{ currentConfig.training?.lambda_freq ?? 0 }}</span>
+          </div>
+          <div class="preview-item" v-if="currentConfig.training?.loss_mode === 'mixed'">
+            <span class="label">Lambda Style</span>
+            <span class="value">{{ currentConfig.training?.lambda_style ?? 0 }}</span>
           </div>
           <div class="preview-item">
             <span class="label">损失模式</span>
             <span class="value highlight">{{ getLossModeLabel(currentConfig.training?.loss_mode) }}</span>
           </div>
         </div>
-        <!-- 频域感知参数 -->
-        <div class="preview-grid-3" v-if="['frequency', 'unified'].includes(currentConfig.training?.loss_mode)">
-          <div class="preview-item">
+        <!-- Mixed 模式参数 -->
+        <div class="preview-grid-3" v-if="currentConfig.training?.loss_mode === 'mixed'">
+          <div class="preview-item" v-if="currentConfig.training?.lambda_freq > 0">
             <span class="label">Alpha HF (高频)</span>
             <span class="value">{{ currentConfig.training?.alpha_hf ?? 1.0 }}</span>
           </div>
-          <div class="preview-item">
+          <div class="preview-item" v-if="currentConfig.training?.lambda_freq > 0">
             <span class="label">Beta LF (低频)</span>
             <span class="value">{{ currentConfig.training?.beta_lf ?? 0.2 }}</span>
           </div>
-          <div class="preview-item">
-            <span class="label">Downsample Factor</span>
-            <span class="value">{{ currentConfig.training?.downsample_factor ?? 4 }}</span>
-          </div>
-        </div>
-        <!-- 风格结构参数 -->
-        <div class="preview-grid-3" v-if="['style', 'unified'].includes(currentConfig.training?.loss_mode)">
-          <div class="preview-item">
+          <div class="preview-item" v-if="currentConfig.training?.lambda_style > 0">
             <span class="label">λ Struct (结构)</span>
             <span class="value">{{ currentConfig.training?.lambda_struct ?? 1.0 }}</span>
           </div>
-          <div class="preview-item">
+          <div class="preview-item" v-if="currentConfig.training?.lambda_style > 0">
             <span class="label">λ Light (光影)</span>
             <span class="value">{{ currentConfig.training?.lambda_light ?? 0.5 }}</span>
           </div>
-          <div class="preview-item">
+          <div class="preview-item" v-if="currentConfig.training?.lambda_style > 0">
             <span class="label">λ Color (色调)</span>
             <span class="value">{{ currentConfig.training?.lambda_color ?? 0.3 }}</span>
           </div>
-          <div class="preview-item">
+          <div class="preview-item" v-if="currentConfig.training?.lambda_style > 0">
             <span class="label">λ Tex (质感)</span>
             <span class="value">{{ currentConfig.training?.lambda_tex ?? 0.5 }}</span>
           </div>

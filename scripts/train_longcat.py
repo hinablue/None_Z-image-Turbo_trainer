@@ -96,9 +96,14 @@ def parse_args():
     
     # 损失模式参数
     parser.add_argument("--loss_mode", type=str, default="standard",
-        choices=["standard", "frequency", "style", "unified"],
-        help="损失模式: standard=MSE+Cosine, frequency=频域感知, style=风格结构, unified=统一模式")
+        choices=["standard", "frequency", "style", "unified", "mixed"],
+        help="损失模式: standard=L1+Cosine, frequency=频域感知, style=风格结构, unified=freq+style, mixed=自定义混合")
+    
+    # 损失权重参数 (mixed 模式下生效，其他模式也使用对应权重)
+    parser.add_argument("--lambda_l1", type=float, default=1.0, help="Charbonnier/L1 Loss 权重")
     parser.add_argument("--lambda_cosine", type=float, default=0.1, help="Cosine Loss 权重")
+    parser.add_argument("--lambda_freq", type=float, default=0.0, help="频域感知 Loss 权重 (mixed模式)")
+    parser.add_argument("--lambda_style", type=float, default=0.0, help="风格结构 Loss 权重 (mixed模式)")
     
     # 频域感知 Loss 参数 (loss_mode=frequency 或 unified)
     parser.add_argument("--alpha_hf", type=float, default=1.0, help="高频增强权重")
@@ -688,28 +693,25 @@ def main():
                 else:
                     snr_weights = None
                 
+                # === Charbonnier Loss (Robust L1, 基础损失) ===
+                diff = model_pred - target_velocity
+                loss_l1 = torch.sqrt(diff**2 + 1e-6).mean()
+                loss_components['l1'] = loss_l1.item()
+                
+                # === Cosine Loss (方向一致性) ===
+                pred_flat = model_pred.view(model_pred.shape[0], -1)
+                target_flat = target_velocity.view(target_velocity.shape[0], -1)
+                cos_sim = F.cosine_similarity(pred_flat, target_flat, dim=1).mean()
+                loss_cosine = 1.0 - cos_sim
+                loss_components['cosine'] = loss_cosine.item()
+                
                 if loss_mode == 'standard':
-                    # 标准模式：MSE + Cosine
-                    loss_mse = F.mse_loss(model_pred, target_velocity)
-                    
-                    # Cosine 方向损失
-                    pred_flat = model_pred.view(model_pred.shape[0], -1)
-                    target_flat = target_velocity.view(target_velocity.shape[0], -1)
-                    cos_sim = F.cosine_similarity(pred_flat, target_flat, dim=1).mean()
-                    loss_cosine = 1.0 - cos_sim
-                    
-                    loss = loss_mse + args.lambda_cosine * loss_cosine
-                    
-                    # 应用 SNR 加权
-                    if snr_weights is not None:
-                        loss = loss * snr_weights.mean()
-                    
-                    loss_components['mse'] = loss_mse.item()
-                    loss_components['cosine'] = loss_cosine.item()
+                    # 标准模式：Charbonnier(L1) + Cosine
+                    loss = args.lambda_l1 * loss_l1 + args.lambda_cosine * loss_cosine
                     
                 elif loss_mode == 'frequency':
                     # 频域感知模式
-                    loss, comps = frequency_loss_fn(
+                    freq_loss, freq_comps = frequency_loss_fn(
                         pred_v=model_pred,
                         target_v=target_velocity,
                         noisy_latents=noisy_latents,
@@ -717,13 +719,12 @@ def main():
                         num_train_timesteps=1000,
                         return_components=True,
                     )
-                    if snr_weights is not None:
-                        loss = loss * snr_weights.mean()
-                    loss_components = {k: v.item() for k, v in comps.items()}
+                    loss = freq_loss
+                    loss_components.update({k: v.item() for k, v in freq_comps.items()})
                     
                 elif loss_mode == 'style':
                     # 风格结构模式
-                    loss, comps = style_loss_fn(
+                    style_loss, style_comps = style_loss_fn(
                         pred_v=model_pred,
                         target_v=target_velocity,
                         noisy_latents=noisy_latents,
@@ -731,9 +732,8 @@ def main():
                         num_train_timesteps=1000,
                         return_components=True,
                     )
-                    if snr_weights is not None:
-                        loss = loss * snr_weights.mean()
-                    loss_components = {k: v.item() for k, v in comps.items()}
+                    loss = style_loss
+                    loss_components.update({k: v.item() for k, v in style_comps.items()})
                     
                 elif loss_mode == 'unified':
                     # 统一模式：组合频域和风格损失
@@ -754,9 +754,42 @@ def main():
                         return_components=True,
                     )
                     loss = (freq_loss + style_loss) / 2
-                    if snr_weights is not None:
-                        loss = loss * snr_weights.mean()
-                    loss_components = {'freq': freq_loss.item(), 'style': style_loss.item()}
+                    loss_components['freq'] = freq_loss.item()
+                    loss_components['style'] = style_loss.item()
+                    
+                elif loss_mode == 'mixed':
+                    # 混合模式：按权重组合所有损失
+                    loss = args.lambda_l1 * loss_l1 + args.lambda_cosine * loss_cosine
+                    
+                    # 可选：添加频域损失
+                    if args.lambda_freq > 0:
+                        freq_loss, freq_comps = frequency_loss_fn(
+                            pred_v=model_pred,
+                            target_v=target_velocity,
+                            noisy_latents=noisy_latents,
+                            timesteps=timesteps,
+                            num_train_timesteps=1000,
+                            return_components=True,
+                        )
+                        loss = loss + args.lambda_freq * freq_loss
+                        loss_components['freq'] = freq_loss.item()
+                    
+                    # 可选：添加风格损失
+                    if args.lambda_style > 0:
+                        style_loss, style_comps = style_loss_fn(
+                            pred_v=model_pred,
+                            target_v=target_velocity,
+                            noisy_latents=noisy_latents,
+                            timesteps=timesteps,
+                            num_train_timesteps=1000,
+                            return_components=True,
+                        )
+                        loss = loss + args.lambda_style * style_loss
+                        loss_components['style'] = style_loss.item()
+                
+                # 应用 SNR 加权
+                if snr_weights is not None:
+                    loss = loss * snr_weights.mean()
                 
                 # 反向传播
                 accelerator.backward(loss)

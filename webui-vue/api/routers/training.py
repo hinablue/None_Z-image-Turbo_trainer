@@ -52,11 +52,14 @@ def get_default_config():
             "lr_scheduler": "constant",  # 少样本训练推荐 constant，cosine 需谨慎设置 warmup
             "lr_warmup_steps": 0,  # 默认不预热，少样本场景预热步数应 < 5% 总步数
             "lr_num_cycles": 1,
-            # Standard 模式参数
-            "lambda_fft": 0,
-            "lambda_cosine": 0,
             # 损失模式
             "loss_mode": "standard",
+            # 基础损失权重
+            "lambda_l1": 1.0,
+            "lambda_cosine": 0.1,
+            # 混合模式权重
+            "lambda_freq": 0,
+            "lambda_style": 0,
             # 频域感知参数
             "alpha_hf": 1.0,
             "beta_lf": 0.2,
@@ -64,7 +67,9 @@ def get_default_config():
             "lambda_struct": 1.0,
             "lambda_light": 0.5,
             "lambda_color": 0.3,
-            "lambda_tex": 0.5
+            "lambda_tex": 0.5,
+            # 兼容旧参数
+            "lambda_fft": 0
         },
         "dataset": {
             "batch_size": 1,
