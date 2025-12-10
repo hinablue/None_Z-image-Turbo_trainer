@@ -76,6 +76,8 @@ def parse_args():
     # LoRA 参数
     parser.add_argument("--network_dim", type=int, default=32, help="LoRA rank")
     parser.add_argument("--network_alpha", type=float, default=16.0, help="LoRA alpha")
+    parser.add_argument("--train_norm", type=bool, default=False, help="训练 norm1.linear 和 norm1_context.linear")
+    parser.add_argument("--train_single_stream", type=bool, default=False, help="训练单流层 (proj_mlp, proj_out)")
     
     # 训练参数
     parser.add_argument("--optimizer_type", type=str, default="AdamW", 
@@ -398,30 +400,60 @@ def create_longcat_dataloader(args):
 class LongCatLoRANetwork:
     """LongCat-Image LoRA 网络"""
     
-    TARGET_MODULES = [
+    # 基础模块 (官方标准)
+    BASE_MODULES = [
         "attn.to_k", "attn.to_q", "attn.to_v", "attn.to_out.0",
         "attn.add_k_proj", "attn.add_q_proj", "attn.add_v_proj", "attn.to_add_out",
         "ff.net.0.proj", "ff.net.2",
         "ff_context.net.0.proj", "ff_context.net.2",
     ]
     
-    def __init__(self, transformer, lora_dim=32, alpha=16.0, dtype=None):
+    # Norm 模块 (可选)
+    NORM_MODULES = [
+        "norm1.linear", "norm1_context.linear",
+    ]
+    
+    # 单流层模块 (可选)
+    SINGLE_STREAM_MODULES = [
+        "proj_mlp", "proj_out",
+    ]
+    
+    def __init__(self, transformer, lora_dim=32, alpha=16.0, dtype=None,
+                 train_norm=False, train_single_stream=False):
         self.transformer = transformer
         self.lora_dim = lora_dim
         self.alpha = alpha
         self.lora_layers = {}
         self.dtype = dtype
+        self.train_norm = train_norm
+        self.train_single_stream = train_single_stream
         
         self._apply_lora()
+    
+    def _build_target_modules(self):
+        """动态构建 target_modules"""
+        modules = list(self.BASE_MODULES)
+        
+        if self.train_norm:
+            modules.extend(self.NORM_MODULES)
+            logger.info("  [LoRA] Norm 层训练已启用")
+        
+        if self.train_single_stream:
+            modules.extend(self.SINGLE_STREAM_MODULES)
+            logger.info("  [LoRA] 单流层训练已启用")
+        
+        return modules
     
     def _apply_lora(self):
         """应用 LoRA 到目标模块"""
         from peft import LoraConfig, get_peft_model
         
+        target_modules = self._build_target_modules()
+        
         lora_config = LoraConfig(
             r=self.lora_dim,
             lora_alpha=self.alpha,
-            target_modules=self.TARGET_MODULES,
+            target_modules=target_modules,
             lora_dropout=0.0,
             bias="none",
         )
@@ -537,7 +569,9 @@ def main():
         transformer,
         lora_dim=args.network_dim,
         alpha=args.network_alpha,
-        dtype=weight_dtype,  # 传入模型精度
+        dtype=weight_dtype,
+        train_norm=getattr(args, 'train_norm', False),
+        train_single_stream=getattr(args, 'train_single_stream', False),
     )
     
     # 检查 LoRA 层精度

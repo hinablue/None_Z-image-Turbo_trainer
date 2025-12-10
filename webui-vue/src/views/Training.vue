@@ -185,6 +185,10 @@
             <span class="label">损失组合</span>
             <span class="value highlight">{{ getEnabledLossLabel(currentConfig.training, currentConfig.acrf) }}</span>
           </div>
+          <div class="preview-item" v-if="currentConfig.lora?.train_adaln || currentConfig.lora?.train_norm || currentConfig.lora?.train_single_stream">
+            <span class="label">LoRA 高级</span>
+            <span class="value highlight">{{ getLoraAdvancedLabel() }}</span>
+          </div>
         </div>
         <!-- 频域感知损失参数 -->
         <div class="preview-grid-3" v-if="currentConfig.training?.enable_freq">
@@ -444,6 +448,17 @@ function getL2ScheduleLabel(): string {
   }
   
   return label
+}
+
+function getLoraAdvancedLabel(): string {
+  const lora = currentConfig.value?.lora || {}
+  const parts: string[] = []
+  
+  if (lora.train_adaln) parts.push('AdaLN')
+  if (lora.train_norm) parts.push('Norm')
+  if (lora.train_single_stream) parts.push('单流')
+  
+  return parts.length > 0 ? `+${parts.join('+')}` : ''
 }
 
 function formatTime(seconds: number): string {

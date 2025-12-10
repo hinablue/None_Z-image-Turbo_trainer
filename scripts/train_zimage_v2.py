@@ -35,7 +35,7 @@ from accelerate.utils import set_seed
 from diffusers.optimization import get_scheduler
 
 # Local imports
-from zimage_trainer.networks.lora import LoRANetwork
+from zimage_trainer.networks.lora import LoRANetwork, ZIMAGE_TARGET_NAMES, ZIMAGE_ADALN_NAMES, EXCLUDE_PATTERNS
 from zimage_trainer.dataset.dataloader import create_dataloader
 from zimage_trainer.acrf_trainer import ACRFTrainer
 from zimage_trainer.utils.snr_utils import compute_snr_weights
@@ -136,6 +136,10 @@ def parse_args():
     parser.add_argument("--l2_anchor_ratio", type=float, default=0.3,
         help="L2 锚点时间步权重 (仅当 include_anchor=True 时生效)")
     
+    # LoRA 高级选项
+    parser.add_argument("--train_adaln", type=bool, default=False,
+        help="训练 AdaLN 调制层 (激进模式)")
+    
     # Optimizer
     parser.add_argument("--optimizer_type", type=str, default="AdamW8bit")
     parser.add_argument("--weight_decay", type=float, default=0.0)
@@ -230,6 +234,10 @@ def parse_args():
         args.l2_include_anchor = acrf_cfg.get("l2_include_anchor", args.l2_include_anchor)
         args.l2_anchor_ratio = acrf_cfg.get("l2_anchor_ratio", args.l2_anchor_ratio)
         
+        # LoRA 高级选项
+        lora_cfg = config.get("lora", {})
+        args.train_adaln = lora_cfg.get("train_adaln", args.train_adaln)
+        
         # Optimizer
         args.optimizer_type = training_cfg.get("optimizer_type", args.optimizer_type)
         args.weight_decay = training_cfg.get("weight_decay", args.weight_decay)
@@ -317,11 +325,23 @@ def main():
     # =========================================================================
     logger.info(f"\n[SETUP] Creating LoRA (rank={args.network_dim})...")
     
+    # 动态构建 target_names 和 exclude_patterns
+    target_names = list(ZIMAGE_TARGET_NAMES)
+    exclude_patterns = list(EXCLUDE_PATTERNS)
+    
+    train_adaln = getattr(args, 'train_adaln', False)
+    if train_adaln:
+        target_names.extend(ZIMAGE_ADALN_NAMES)
+        exclude_patterns = [p for p in exclude_patterns if "adaLN" not in p]
+        logger.info("  [LoRA] AdaLN 训练已启用")
+    
     network = LoRANetwork(
         unet=transformer,
         lora_dim=args.network_dim,
         alpha=args.network_alpha,
         multiplier=1.0,
+        target_names=target_names,
+        exclude_patterns=exclude_patterns,
     )
     network.apply_to(transformer)
     
