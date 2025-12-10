@@ -133,6 +133,8 @@ def parse_args():
         help="阶梯模式切换点 (epoch, 逗号分隔)")
     parser.add_argument("--l2_include_anchor", type=bool, default=False,
         help="L2 同时计算锚点时间步")
+    parser.add_argument("--l2_anchor_ratio", type=float, default=0.3,
+        help="L2 锚点时间步权重 (仅当 include_anchor=True 时生效)")
     
     # Optimizer
     parser.add_argument("--optimizer_type", type=str, default="AdamW8bit")
@@ -226,6 +228,7 @@ def parse_args():
         args.l2_final_ratio = acrf_cfg.get("l2_final_ratio", args.l2_final_ratio)
         args.l2_milestones = acrf_cfg.get("l2_milestones", args.l2_milestones)
         args.l2_include_anchor = acrf_cfg.get("l2_include_anchor", args.l2_include_anchor)
+        args.l2_anchor_ratio = acrf_cfg.get("l2_anchor_ratio", args.l2_anchor_ratio)
         
         # Optimizer
         args.optimizer_type = training_cfg.get("optimizer_type", args.optimizer_type)
@@ -603,8 +606,10 @@ def main():
                     l2_include_anchor = getattr(args, 'l2_include_anchor', False)
                     if l2_include_anchor:
                         # 锚点 L2: 使用已有的 model_pred 和 target_velocity
+                        # 权重由 l2_anchor_ratio 控制
+                        l2_anchor_ratio = getattr(args, 'l2_anchor_ratio', 0.3)
                         anchor_l2 = F.mse_loss(model_pred, target_velocity)
-                        l2_loss = l2_loss + anchor_l2
+                        l2_loss = l2_loss + (l2_anchor_ratio * anchor_l2)
                         l2_loss_val = l2_loss.item()
                         
                 loss_components['L2'] = l2_loss_val

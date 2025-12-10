@@ -538,6 +538,7 @@ def generate_training_toml_config(config: Dict[str, Any], model_type: str = "zim
         f"l2_final_ratio = {config.get('acrf', {}).get('l2_final_ratio', 0.3)}",
         f'l2_milestones = "{config.get("acrf", {}).get("l2_milestones", "")}"',
         f"l2_include_anchor = {'true' if config.get('acrf', {}).get('l2_include_anchor', False) else 'false'}",
+        f"l2_anchor_ratio = {config.get('acrf', {}).get('l2_anchor_ratio', 0.3)}",
         # Latent Jitter (构图突破)
         f"latent_jitter_scale = {config.get('acrf', {}).get('latent_jitter_scale', 0.0)}",
         "",

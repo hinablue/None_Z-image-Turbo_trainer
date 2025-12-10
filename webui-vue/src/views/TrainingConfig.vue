@@ -540,6 +540,16 @@
                 </span>
                 <el-switch v-model="config.acrf.l2_include_anchor" />
               </div>
+              <div class="control-row" v-if="config.acrf.l2_include_anchor">
+                <span class="label">
+                  L2 锚点比例
+                  <el-tooltip content="锚点时间步的 L2 损失权重。这是与 L1 叠加的权重" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.l2_anchor_ratio" :min="0.05" :max="1.0" :step="0.05" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.l2_anchor_ratio" :min="0.05" :max="1.0" :step="0.05" controls-position="right" class="input-fixed" />
+              </div>
             </template>
 
             <div class="subsection-label">Latent Jitter（构图突破）</div>
@@ -794,6 +804,7 @@ function getDefaultConfig() {
       l2_final_ratio: 0.3,
       l2_milestones: '',
       l2_include_anchor: false,
+      l2_anchor_ratio: 0.3,
       // Latent Jitter (构图突破)
       latent_jitter_scale: 0.0
     },

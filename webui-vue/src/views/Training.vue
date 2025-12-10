@@ -435,7 +435,15 @@ function getL2ScheduleLabel(): string {
     'linear_decrease': `${(initial * 100).toFixed(0)}% → ${(final * 100).toFixed(0)}%`,
     'step': `阶梯 ${(initial * 100).toFixed(0)}%→${(final * 100).toFixed(0)}%`
   }
-  return modeLabels[mode] || `${(initial * 100).toFixed(0)}%`
+  
+  let label = modeLabels[mode] || `${(initial * 100).toFixed(0)}%`
+  
+  if (acrf.l2_include_anchor) {
+    const anchorRatio = acrf.l2_anchor_ratio ?? 0.3
+    label += ` (+锚点 ${(anchorRatio * 100).toFixed(0)}%)`
+  }
+  
+  return label
 }
 
 function formatTime(seconds: number): string {

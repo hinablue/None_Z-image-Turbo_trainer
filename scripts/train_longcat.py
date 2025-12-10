@@ -127,6 +127,8 @@ def parse_args():
         help="阶梯模式切换点 (epoch, 逗号分隔)")
     parser.add_argument("--l2_include_anchor", type=bool, default=False,
         help="L2 同时计算锚点时间步")
+    parser.add_argument("--l2_anchor_ratio", type=float, default=0.3,
+        help="L2 锚点时间步权重")
     
     # Latent Jitter: 空间抠动 (垂直于流线方向，真正改变构图的关键)
     parser.add_argument("--latent_jitter_scale", type=float, default=0.0, help="Latent 空间抠动幅度 (0=禁用, 推荐 0.03-0.05)")
@@ -842,8 +844,10 @@ def main():
                     l2_include_anchor = getattr(args, 'l2_include_anchor', False)
                     if l2_include_anchor:
                         # 锚点 L2: 使用已有的 model_pred 和 target_velocity
+                        # 权重由 l2_anchor_ratio 控制
+                        l2_anchor_ratio = getattr(args, 'l2_anchor_ratio', 0.3)
                         anchor_l2 = F.mse_loss(model_pred, target_velocity)
-                        loss_free = loss_free + anchor_l2
+                        loss_free = loss_free + (l2_anchor_ratio * anchor_l2)
                         l2_loss_val = loss_free.item()
                         
                     loss_components['L2'] = l2_loss_val
