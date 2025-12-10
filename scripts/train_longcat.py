@@ -817,7 +817,7 @@ def main():
                     
                     # RAFT 混合: loss_total = loss_anchor + ratio * loss_free
                     loss = loss + free_stream_ratio * loss_free
-                    loss_components['loss_free'] = loss_free.item()
+                    loss_components['L2'] = loss_free.item()
                 
                 elif lambda_mse > 0:
                     # 兼容旧版: 独立 L2 损失 (不参与梯度)
