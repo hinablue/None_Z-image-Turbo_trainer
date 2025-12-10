@@ -353,6 +353,12 @@ def main():
         logger.info(f"  [Style] Enabled lambda={args.lambda_style}, struct={args.lambda_struct}, light={args.lambda_light}, color={args.lambda_color}, tex={args.lambda_tex}")
     
     # RAFT L2 混合模式
+    # 确保 raft_mode 是布尔值 (TOML 可能返回字符串)
+    if isinstance(args.raft_mode, str):
+        args.raft_mode = args.raft_mode.lower() in ('true', '1', 'yes')
+    args.raft_mode = bool(args.raft_mode)
+    
+    logger.info(f"  [RAFT] raft_mode={args.raft_mode} (type={type(args.raft_mode).__name__}), free_stream_ratio={args.free_stream_ratio}")
     if args.raft_mode:
         logger.info(f"  [RAFT] L2 混合模式 Enabled, free_stream_ratio={args.free_stream_ratio}")
     else:
