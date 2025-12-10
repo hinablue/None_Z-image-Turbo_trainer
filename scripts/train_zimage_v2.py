@@ -498,7 +498,7 @@ def main():
                 # Frequency Loss (requires noisy_latents and timesteps)
                 freq_loss_val = 0.0
                 if freq_loss_fn and args.lambda_freq > 0:
-                    freq_loss = freq_loss_fn(model_pred, target_velocity, noisy_latents, timesteps)
+                    freq_loss = freq_loss_fn(model_pred, target_velocity, noisy_latents, timesteps, num_train_timesteps=1000)
                     loss = loss + args.lambda_freq * freq_loss
                     freq_loss_val = freq_loss.item()
                 loss_components['freq'] = freq_loss_val
@@ -506,7 +506,7 @@ def main():
                 # Style-Structure Loss (requires noisy_latents and timesteps)
                 style_loss_val = 0.0
                 if style_loss_fn and args.lambda_style > 0:
-                    style_loss = style_loss_fn(model_pred, target_velocity, noisy_latents, timesteps)
+                    style_loss = style_loss_fn(model_pred, target_velocity, noisy_latents, timesteps, num_train_timesteps=1000)
                     loss = loss + args.lambda_style * style_loss
                     style_loss_val = style_loss.item()
                 loss_components['style'] = style_loss_val
@@ -519,6 +519,12 @@ def main():
                 )
                 snr_weights = snr_weights.to(device=loss.device, dtype=weight_dtype)
                 loss = loss * snr_weights.mean()
+                
+                # NaN check
+                if torch.isnan(loss) or torch.isinf(loss):
+                    logger.warning(f"[NaN] Loss is NaN/Inf at step {global_step}, skipping backward. Components: {loss_components}")
+                    optimizer.zero_grad()
+                    continue
                 
                 # Cast loss to float32 for stable backward
                 loss = loss.float()
