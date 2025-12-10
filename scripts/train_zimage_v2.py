@@ -574,9 +574,11 @@ def main():
                 
                 # SNR weighting
                 snr_weights = compute_snr_weights(
-                    timesteps,
+                    timesteps=timesteps,
+                    num_train_timesteps=1000,
                     snr_gamma=args.snr_gamma,
                     snr_floor=args.snr_floor,
+                    prediction_type="v_prediction",
                 )
                 snr_weights = snr_weights.to(device=loss.device, dtype=weight_dtype)
                 loss = loss * snr_weights.mean()
