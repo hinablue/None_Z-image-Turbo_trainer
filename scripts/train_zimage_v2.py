@@ -709,13 +709,14 @@ def main():
                 if memory_optimizer:
                     memory_optimizer.optimize_training_step()
                 
-                # Gradient clipping
-                if accelerator.sync_gradients:
-                    accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
-                
+            # 梯度累积完成后执行优化步骤 (在 accumulate 块外)
+            if accelerator.sync_gradients:
+                accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
+                
+                global_step += 1
                 
                 # Update EMA loss
                 current_loss = loss.item()
@@ -724,66 +725,63 @@ def main():
                 else:
                     ema_loss = ema_decay * ema_loss + (1 - ema_decay) * current_loss
                 
-                if accelerator.sync_gradients:
-                    global_step += 1
-                    
-                    # Get current learning rate
-                    current_lr = lr_scheduler.get_last_lr()[0]
-                    
-                    # Print progress for frontend parsing (CRITICAL: exact format required)
-                    # 只让主进程打印日志，避免多卡训练时日志混乱
-                    if accelerator.is_main_process:
-                        l1 = loss_components.get('l1', 0)
-                        cosine = loss_components.get('cosine', 0)
-                        freq = loss_components.get('freq', 0)
-                        style = loss_components.get('style', 0)
-                        l2 = loss_components.get('L2', 0)
-                        print(f"[STEP] {global_step}/{max_train_steps} epoch={epoch+1}/{args.num_train_epochs} loss={current_loss:.4f} ema={ema_loss:.4f} l1={l1:.4f} cos={cosine:.4f} freq={freq:.4f} style={style:.4f} L2={l2:.4f} lr={current_lr:.2e}", flush=True)
-                    
-                    # ========== 正则训练步骤 (按比例执行) ==========
-                    if reg_dataloader and reg_ratio > 0:
-                        # 按比例决定是否执行正则步骤：ratio=0.5 表示每2步执行1次正则
-                        reg_interval = max(1, int(1.0 / reg_ratio))
-                        if global_step % reg_interval == 0:
-                            # 获取正则 batch
-                            if reg_iterator is None:
-                                reg_iterator = iter(reg_dataloader)
-                            try:
-                                reg_batch = next(reg_iterator)
-                            except StopIteration:
-                                reg_iterator = iter(reg_dataloader)
-                                reg_batch = next(reg_iterator)
+                # Get current learning rate
+                current_lr = lr_scheduler.get_last_lr()[0]
+                
+                # Print progress for frontend parsing (CRITICAL: exact format required)
+                # 只让主进程打印日志，避免多卡训练时日志混乱
+                if accelerator.is_main_process:
+                    l1 = loss_components.get('l1', 0)
+                    cosine = loss_components.get('cosine', 0)
+                    freq = loss_components.get('freq', 0)
+                    style = loss_components.get('style', 0)
+                    l2 = loss_components.get('L2', 0)
+                    print(f"[STEP] {global_step}/{max_train_steps} epoch={epoch+1}/{args.num_train_epochs} loss={current_loss:.4f} ema={ema_loss:.4f} l1={l1:.4f} cos={cosine:.4f} freq={freq:.4f} style={style:.4f} L2={l2:.4f} lr={current_lr:.2e}", flush=True)
+                
+                # ========== 正则训练步骤 (按比例执行) ==========
+                if reg_dataloader and reg_ratio > 0:
+                    # 按比例决定是否执行正则步骤：ratio=0.5 表示每2步执行1次正则
+                    reg_interval = max(1, int(1.0 / reg_ratio))
+                    if global_step % reg_interval == 0:
+                        # 获取正则 batch
+                        if reg_iterator is None:
+                            reg_iterator = iter(reg_dataloader)
+                        try:
+                            reg_batch = next(reg_iterator)
+                        except StopIteration:
+                            reg_iterator = iter(reg_dataloader)
+                            reg_batch = next(reg_iterator)
+                        
+                        # 正则前向传播
+                        with accelerator.accumulate(transformer):
+                            reg_latents = reg_batch['latents'].to(accelerator.device, dtype=weight_dtype)
+                            reg_vl_embed = reg_batch['vl_embed']
+                            reg_vl_embed = [v.to(accelerator.device, dtype=weight_dtype) for v in reg_vl_embed]
                             
-                            # 正则前向传播 (不更新 LoRA, 只更新 network 保持稳定性)
-                            with accelerator.accumulate(transformer):
-                                reg_latents = reg_batch['latents'].to(accelerator.device, dtype=weight_dtype)
-                                reg_vl_embed = reg_batch['vl_embed']
-                                reg_vl_embed = [v.to(accelerator.device, dtype=weight_dtype) for v in reg_vl_embed]
-                                
-                                reg_noise = torch.randn_like(reg_latents)
-                                reg_noisy, reg_t, reg_target = acrf_trainer.sample_batch(
-                                    reg_latents, reg_noise, jitter_scale=args.jitter_scale
-                                )
-                                
-                                reg_input = reg_noisy.unsqueeze(2)
-                                reg_input_list = list(reg_input.unbind(dim=0))
-                                reg_t_norm = (1000 - reg_t) / 1000.0
-                                
-                                reg_pred_list = transformer(
-                                    x=reg_input_list,
-                                    t=reg_t_norm.to(dtype=weight_dtype),
-                                    cap_feats=reg_vl_embed,
-                                )[0]
-                                reg_pred = -torch.stack(reg_pred_list, dim=0).squeeze(2)
-                                
-                                # 简单 L2 损失，保持模型原有能力
-                                reg_loss = F.mse_loss(reg_pred, reg_target) * reg_weight
-                                accelerator.backward(reg_loss)
+                            reg_noise = torch.randn_like(reg_latents)
+                            reg_noisy, reg_t, reg_target = acrf_trainer.sample_batch(
+                                reg_latents, reg_noise, jitter_scale=args.jitter_scale
+                            )
                             
-                            if accelerator.sync_gradients:
-                                accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
-                                optimizer.step()
-                                optimizer.zero_grad()
+                            reg_input = reg_noisy.unsqueeze(2)
+                            reg_input_list = list(reg_input.unbind(dim=0))
+                            reg_t_norm = (1000 - reg_t) / 1000.0
+                            
+                            reg_pred_list = transformer(
+                                x=reg_input_list,
+                                t=reg_t_norm.to(dtype=weight_dtype),
+                                cap_feats=reg_vl_embed,
+                            )[0]
+                            reg_pred = -torch.stack(reg_pred_list, dim=0).squeeze(2)
+                            
+                            # 简单 L2 损失，保持模型原有能力
+                            reg_loss = F.mse_loss(reg_pred, reg_target) * reg_weight
+                            accelerator.backward(reg_loss)
+                        
+                        if accelerator.sync_gradients:
+                            accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
+                            optimizer.step()
+                            optimizer.zero_grad()
         
         # Save checkpoint
         if accelerator.is_main_process and (epoch + 1) % args.save_every_n_epochs == 0:
