@@ -482,6 +482,12 @@ def main():
         optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=args.weight_decay)
         logger.info("  Using standard AdamW optimizer")
     
+    # Prepare with accelerator FIRST (before calculating steps)
+    optimizer, dataloader, lr_scheduler_placeholder = accelerator.prepare(
+        optimizer, dataloader, None
+    )
+    
+    # Calculate max_train_steps AFTER prepare (len(dataloader) is already divided by num_gpus)
     max_train_steps = len(dataloader) * args.num_train_epochs // args.gradient_accumulation_steps
     
     lr_scheduler = get_scheduler(
@@ -496,11 +502,6 @@ def main():
     logger.info(f"  Num Batches per Epoch = {len(dataloader)}")
     logger.info(f"  Gradient Accumulation = {args.gradient_accumulation_steps}")
     logger.info(f"  Total Optimization Steps = {max_train_steps}")
-    
-    # Prepare with accelerator
-    optimizer, dataloader, lr_scheduler = accelerator.prepare(
-        optimizer, dataloader, lr_scheduler
-    )
     
     # =========================================================================
     # 8. Training Loop
