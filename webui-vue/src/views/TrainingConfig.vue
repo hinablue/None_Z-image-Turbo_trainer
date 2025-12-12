@@ -1092,6 +1092,7 @@ async function loadConfig(configName: string) {
       ...res.data,
       acrf: { ...defaultCfg.acrf, ...res.data.acrf },
       network: { ...defaultCfg.network, ...res.data.network },
+      lora: { ...defaultCfg.lora, ...res.data.lora },  // LoRA 配置（包括继续训练）
       optimizer: { ...defaultCfg.optimizer, ...res.data.optimizer },
       training: { ...defaultCfg.training, ...res.data.training },
       dataset: { 
