@@ -166,12 +166,15 @@ const fetchLoras = async () => {
   loading.value = true
   selectedLoras.value = []
   try {
-    const [lorasRes, pathsRes] = await Promise.all([
-      axios.get('/api/loras'),
-      axios.get('/api/training/system-paths')
-    ])
-    loraList.value = lorasRes.data
-    loraPath.value = pathsRes.data.output_base_dir || './output'
+    const res = await axios.get('/api/loras')
+    // 新的返回格式: { loras, loraPath, loraPathExists }
+    loraList.value = res.data.loras || res.data || []
+    loraPath.value = res.data.loraPath || './output'
+    
+    // 调试日志
+    console.log('[LoRA] loraPath:', res.data.loraPath )
+    console.log('[LoRA] loraPathExists:', res.data.loraPathExists)
+    console.log('[LoRA] loras count:', loraList.value.length)
   } catch (e) {
     console.error('Failed to fetch LoRAs:', e)
     ElMessage.error('获取 LoRA 列表失败')

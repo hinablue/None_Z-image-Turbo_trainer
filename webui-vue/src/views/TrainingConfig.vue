@@ -47,17 +47,56 @@
     <el-card class="config-content-card glass-card" v-loading="loading">
       <el-collapse v-model="activeNames" class="config-collapse">
 
+        <!-- 1. 模型类型选择 -->
+        <el-collapse-item name="model">
+          <template #title>
+            <div class="collapse-title">
+              <el-icon><Cpu /></el-icon>
+              <span>模型类型</span>
+              <el-tag :type="(modelTagType as 'primary' | 'success' | 'warning' | 'info' | 'danger')" size="small" style="margin-left: 10px">{{ modelDisplayName }}</el-tag>
+            </div>
+          </template>
+          <div class="collapse-content">
+            <div class="model-type-cards">
+              <div 
+                v-for="model in availableModels" 
+                :key="model.value"
+                :class="['model-card', { active: config.model_type === model.value, disabled: model.disabled }]"
+                @click="!model.disabled && selectModelType(model.value)"
+              >
+                <div class="model-icon">{{ model.icon }}</div>
+                <div class="model-info">
+                  <div class="model-name">{{ model.label }}</div>
+                  <div class="model-desc">{{ model.description }}</div>
+                </div>
+                <el-tag v-if="model.tag" :type="(model.tagType as 'primary' | 'success' | 'warning' | 'info' | 'danger')" size="small">{{ model.tag }}</el-tag>
+              </div>
+            </div>
+          </div>
+        </el-collapse-item>
 
-        <!-- 2. AC-RF 参数 -->
+        <!-- 2. 模型专属参数（根据模型类型显示） -->
         <el-collapse-item name="acrf">
           <template #title>
             <div class="collapse-title">
               <el-icon><DataAnalysis /></el-icon>
-              <span>AC-RF 参数</span>
+              <span>{{ config.model_type === 'zimage' ? 'Zimage 参数' : 'Longcat 参数' }}</span>
             </div>
           </template>
           <div class="collapse-content">
+            <!-- Turbo 开关（两个模型都有） -->
             <div class="control-row">
+              <span class="label">
+                启用 Turbo
+                <el-tooltip content="开启后使用加速推理模式，关闭则使用标准推理" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-switch v-model="config.acrf.enable_turbo" />
+            </div>
+            
+            <!-- Turbo 步数（启用 Turbo 时显示） -->
+            <div class="control-row" v-if="config.acrf.enable_turbo">
               <span class="label">
                 Turbo 步数
                 <el-tooltip content="生成时用多少步，这里就写多少步" placement="top">
@@ -67,6 +106,63 @@
               <el-slider v-model="config.acrf.turbo_steps" :min="1" :max="10" :step="1" :show-tooltip="false" class="slider-flex" />
               <el-input-number v-model="config.acrf.turbo_steps" :min="1" :max="10" :step="1" controls-position="right" class="input-fixed" />
             </div>
+
+            <!-- ============ Zimage 特有参数 ============ -->
+            <template v-if="config.model_type === 'zimage'">
+              <div class="control-row">
+                <span class="label">
+                  Shift
+                  <el-tooltip content="时间步偏移，影响噪声调度，默认 3.0" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.shift" :min="1" :max="5" :step="0.1" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.shift" :min="1" :max="5" :step="0.1" controls-position="right" class="input-fixed" />
+              </div>
+              <div class="control-row">
+                <span class="label">
+                  Jitter Scale
+                  <el-tooltip content="时间步抖动幅度，增加训练多样性，0=关闭" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.jitter_scale" :min="0" :max="0.1" :step="0.01" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.jitter_scale" :min="0" :max="0.1" :step="0.01" controls-position="right" class="input-fixed" />
+              </div>
+            </template>
+
+            <!-- ============ Longcat 特有参数 ============ -->
+            <template v-if="config.model_type === 'longcat'">
+              <div class="control-row">
+                <span class="label">
+                  动态 Shift
+                  <el-tooltip content="根据图像序列长度自动调整 shift 值，推荐开启" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-switch v-model="config.acrf.use_dynamic_shifting" />
+              </div>
+              <div class="control-row">
+                <span class="label">
+                  Base Shift
+                  <el-tooltip content="动态 shift 的基础值，对应小图（默认 0.5）" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.base_shift" :min="0.1" :max="2" :step="0.05" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.base_shift" :min="0.1" :max="2" :step="0.05" controls-position="right" class="input-fixed" />
+              </div>
+              <div class="control-row">
+                <span class="label">
+                  Max Shift
+                  <el-tooltip content="动态 shift 的最大值，对应大图（默认 1.15）" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.max_shift" :min="0.5" :max="3" :step="0.05" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.max_shift" :min="0.5" :max="3" :step="0.05" controls-position="right" class="input-fixed" />
+              </div>
+            </template>
           </div>
         </el-collapse-item>
 
@@ -79,26 +175,99 @@
             </div>
           </template>
           <div class="collapse-content">
+            <!-- 继续训练模式开关 -->
             <div class="control-row">
               <span class="label">
-                Network Dim (Rank)
-                <el-tooltip content="LoRA 矩阵的秩，越大学习能力越强但文件越大，推荐 4-32" placement="top">
+                继续训练已有 LoRA
+                <el-tooltip content="加载已有 LoRA 继续训练，Rank/层设置将从 LoRA 文件自动读取" placement="top">
                   <el-icon class="help-icon"><QuestionFilled /></el-icon>
                 </el-tooltip>
               </span>
-              <el-slider v-model="config.network.dim" :min="4" :max="128" :step="4" :show-tooltip="false" class="slider-flex" />
-              <el-input-number v-model="config.network.dim" :min="4" :max="128" :step="4" controls-position="right" class="input-fixed" />
+              <el-switch v-model="config.lora.resume_training" />
             </div>
-            <div class="control-row">
-              <span class="label">
-                Network Alpha
-                <el-tooltip content="缩放因子，通常设为 Dim 的一半，影响学习率效果" placement="top">
-                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
-                </el-tooltip>
-              </span>
-              <el-slider v-model="config.network.alpha" :min="1" :max="64" :step="0.5" :show-tooltip="false" class="slider-flex" />
-              <el-input-number v-model="config.network.alpha" :min="1" :max="64" :step="0.5" controls-position="right" class="input-fixed" />
-            </div>
+            
+            <!-- 继续训练时显示 LoRA 选择器 -->
+            <template v-if="config.lora.resume_training">
+              <div class="form-row-full">
+                <label>
+                  选择 LoRA 文件
+                  <el-tooltip content="选择要继续训练的 LoRA 文件，Rank 将自动推断" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </label>
+                <el-select v-model="config.lora.resume_lora_path" placeholder="选择 LoRA 文件..." filterable clearable style="width: 100%">
+                  <el-option v-for="lora in loraList" :key="lora.path" :label="lora.name" :value="lora.path">
+                    <span style="float: left">{{ lora.name }}</span>
+                    <span style="float: right; color: var(--el-text-color-secondary); font-size: 12px">
+                      {{ (lora.size / 1024 / 1024).toFixed(1) }} MB
+                    </span>
+                  </el-option>
+                </el-select>
+              </div>
+              <el-alert 
+                v-if="config.lora.resume_lora_path" 
+                type="info" 
+                :closable="false" 
+                show-icon
+                style="margin-top: 12px"
+              >
+                Rank 和层设置将从 LoRA 文件自动读取
+              </el-alert>
+            </template>
+            
+            <!-- 新建 LoRA 时才显示 rank/alpha/层设置 -->
+            <template v-else>
+              <div class="control-row">
+                <span class="label">
+                  Network Dim (Rank)
+                  <el-tooltip content="LoRA 矩阵的秩，越大学习能力越强但文件越大，推荐 4-32" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.network.dim" :min="4" :max="128" :step="4" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.network.dim" :min="4" :max="128" :step="4" controls-position="right" class="input-fixed" />
+              </div>
+              <div class="control-row">
+                <span class="label">
+                  Network Alpha
+                  <el-tooltip content="缩放因子，通常设为 Dim 的一半，影响学习率效果" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.network.alpha" :min="1" :max="64" :step="0.5" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.network.alpha" :min="1" :max="64" :step="0.5" controls-position="right" class="input-fixed" />
+              </div>
+              
+              <!-- LoRA 高级选项 -->
+              <div class="subsection-label">高级选项 (LoRA Targets)</div>
+              <div class="control-row" v-if="config.model_type === 'zimage'">
+                <span class="label">
+                  训练 AdaLN
+                  <el-tooltip content="训练 AdaLN 调制层 (激进模式，可能导致过拟合)" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-switch v-model="config.lora.train_adaln" />
+              </div>
+              <div class="control-row" v-if="config.model_type === 'longcat'">
+                <span class="label">
+                  训练 Norm 层
+                  <el-tooltip content="训练 norm1.linear 和 norm1_context.linear" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-switch v-model="config.lora.train_norm" />
+              </div>
+              <div class="control-row" v-if="config.model_type === 'longcat'">
+                <span class="label">
+                  训练单流层
+                  <el-tooltip content="训练单流 Transformer 块 (proj_mlp, proj_out)" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-switch v-model="config.lora.train_single_stream" />
+              </div>
+            </template>
           </div>
         </el-collapse-item>
 
@@ -226,6 +395,15 @@
               </span>
               <el-switch v-model="config.advanced.gradient_checkpointing" />
             </div>
+            <div class="control-row">
+              <span class="label">
+                Blocks to Swap
+                <el-tooltip content="将transformer blocks交换到CPU节省显存。16G显存建议4-8，24G可不设置" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-input-number v-model="config.advanced.blocks_to_swap" :min="0" :max="20" controls-position="right" style="width: 150px" />
+            </div>
             <div class="form-row-full">
               <label>
                 混合精度
@@ -247,6 +425,33 @@
               </el-tooltip>
               </span>
               <el-input-number v-model="config.advanced.seed" :min="0" controls-position="right" style="width: 150px" />
+            </div>
+            
+            <!-- 多卡训练配置 -->
+            <div class="subsection-label">GPU 配置 (MULTI-GPU)</div>
+            <div class="control-row">
+              <span class="label">
+                GPU 数量
+                <el-tooltip content="使用多张 GPU 进行分布式训练，可加速训练但需要足够显存" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-select v-model="config.advanced.num_gpus" style="width: 150px">
+                <el-option label="1 (单卡)" :value="1" />
+                <el-option label="2" :value="2" />
+                <el-option label="3" :value="3" />
+                <el-option label="4" :value="4" />
+                <el-option label="8" :value="8" />
+              </el-select>
+            </div>
+            <div class="control-row">
+              <span class="label">
+                GPU ID
+                <el-tooltip content="指定使用的 GPU 编号，如 '0,1' 或 '2,3'，留空自动选择" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-input v-model="config.advanced.gpu_ids" placeholder="如: 0,1,2" style="width: 150px" />
             </div>
           </div>
         </el-collapse-item>
@@ -338,6 +543,77 @@
                 <el-input-number v-model="ds.resolution_limit" :min="256" :max="2048" :step="64" controls-position="right" class="input-fixed" />
               </div>
             </div>
+            
+            <!-- 正则数据集配置（防止过拟合） -->
+            <div class="subsection-label" style="margin-top: 20px">
+              正则数据集 (Regularization)
+              <el-tooltip content="正则数据集用于防止过拟合，保持模型原有能力。训练时会混合使用正则数据。" placement="top">
+                <el-icon class="help-icon"><QuestionFilled /></el-icon>
+              </el-tooltip>
+            </div>
+            
+            <div class="control-row">
+              <span class="label">启用正则数据集</span>
+              <el-switch v-model="config.reg_dataset.enabled" />
+            </div>
+            
+            <template v-if="config.reg_dataset.enabled">
+              <div class="control-row">
+                <span class="label">
+                  混合比例
+                  <el-tooltip content="正则数据占总数据的比例。0.5 = 1:1 混合，0.3 = 正则占 30%" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.reg_dataset.ratio" :min="0.1" :max="0.9" :step="0.1" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.reg_dataset.ratio" :min="0.1" :max="0.9" :step="0.1" controls-position="right" class="input-fixed" :precision="1" />
+              </div>
+              
+              <div class="control-row">
+                <span class="label">
+                  正则损失权重
+                  <el-tooltip content="正则数据的损失权重。1.0 = 与训练数据相同权重" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.reg_dataset.weight" :min="0.1" :max="2.0" :step="0.1" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.reg_dataset.weight" :min="0.1" :max="2.0" :step="0.1" controls-position="right" class="input-fixed" :precision="1" />
+              </div>
+              
+              <div class="form-row-full">
+                <label>选择正则数据集</label>
+                <div class="dataset-toolbar">
+                  <el-select v-model="selectedRegDataset" placeholder="从数据集库选择..." clearable @change="onRegDatasetSelect" style="width: 280px">
+                    <el-option v-for="ds in cachedDatasets" :key="ds.path" :label="ds.name" :value="ds.path">
+                      <span style="float: left">{{ ds.name }}</span>
+                      <span style="float: right; color: var(--el-text-color-secondary); font-size: 12px">{{ ds.files }} 文件</span>
+                    </el-option>
+                  </el-select>
+                  <el-button size="small" type="primary" @click="addRegDataset" :icon="Plus">添加</el-button>
+                </div>
+              </div>
+              
+              <div v-if="config.reg_dataset.datasets.length === 0" class="empty-datasets">
+                <el-icon><FolderOpened /></el-icon>
+                <p>暂无正则数据集</p>
+              </div>
+              
+              <div v-for="(rds, ridx) in config.reg_dataset.datasets" :key="ridx" class="dataset-item reg-dataset-item">
+                <div class="dataset-header">
+                  <span class="dataset-index">正则数据集 {{ ridx + 1 }}</span>
+                  <el-button type="danger" size="small" @click="removeRegDataset(ridx)" :icon="Delete">删除</el-button>
+                </div>
+                <div class="form-row-full">
+                  <label>缓存目录路径</label>
+                  <el-input v-model="rds.cache_directory" placeholder="正则数据集缓存路径" />
+                </div>
+                <div class="control-row">
+                  <span class="label">重复次数</span>
+                  <el-slider v-model="rds.num_repeats" :min="1" :max="50" :step="1" :show-tooltip="false" class="slider-flex" />
+                  <el-input-number v-model="rds.num_repeats" :min="1" :max="50" controls-position="right" class="input-fixed" />
+                </div>
+              </div>
+            </template>
           </div>
         </el-collapse-item>
 
@@ -350,27 +626,7 @@
             </div>
           </template>
           <div class="collapse-content">
-            <div class="subsection-label">AC-RF 高级参数</div>
-            <div class="control-row">
-              <span class="label">
-                Shift
-                <el-tooltip content="时间步偏移，影响噪声调度，一般不用改" placement="top">
-                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
-                </el-tooltip>
-              </span>
-              <el-slider v-model="config.acrf.shift" :min="1" :max="5" :step="0.1" :show-tooltip="false" class="slider-flex" />
-              <el-input-number v-model="config.acrf.shift" :min="1" :max="5" :step="0.1" controls-position="right" class="input-fixed" />
-            </div>
-            <div class="control-row">
-              <span class="label">
-                Jitter Scale
-                <el-tooltip content="时间步抖动幅度，增加训练多样性，0=关闭" placement="top">
-                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
-                </el-tooltip>
-              </span>
-              <el-slider v-model="config.acrf.jitter_scale" :min="0" :max="0.1" :step="0.01" :show-tooltip="false" class="slider-flex" />
-              <el-input-number v-model="config.acrf.jitter_scale" :min="0" :max="0.1" :step="0.01" controls-position="right" class="input-fixed" />
-            </div>
+            <div class="subsection-label">SNR 参数（公用）</div>
             <div class="control-row">
               <span class="label">
                 SNR Gamma
@@ -392,116 +648,196 @@
               <el-input-number v-model="config.acrf.snr_floor" :min="0" :max="0.5" :step="0.01" controls-position="right" class="input-fixed" />
             </div>
 
-            <div class="subsection-label">损失函数模式 (LOSS MODE)</div>
-            <div class="form-row-full">
-              <label>
-                损失模式
-                <el-tooltip content="standard=基础MSE, frequency=频域感知(锐化细节), style=风格结构(学习光影色调), unified=统一模式(两者结合)" placement="top">
+            <div class="subsection-label">MSE/L2 混合损失（构图增强）</div>
+            <div class="control-row">
+              <span class="label">
+                启用 L2 混合
+                <el-tooltip content="同batch混合锚点流+自由流L2损失，增强构图学习能力" placement="top">
                   <el-icon class="help-icon"><QuestionFilled /></el-icon>
                 </el-tooltip>
-              </label>
-              <el-select v-model="config.training.loss_mode" style="width: 100%">
-                <el-option label="Standard (基础MSE)" value="standard" />
-                <el-option label="Frequency (频域感知 - 锐化细节)" value="frequency" />
-                <el-option label="Style (风格结构 - 光影色调)" value="style" />
-                <el-option label="Unified (统一模式 - 两者结合)" value="unified" />
-              </el-select>
+              </span>
+              <el-switch v-model="config.acrf.raft_mode" />
             </div>
-            
-            <!-- Standard 模式参数 -->
-            <template v-if="config.training.loss_mode === 'standard'">
-              <div class="subsection-label">混合损失函数 (HYBRID LOSS)</div>
-            <div class="control-row">
+            <template v-if="config.acrf.raft_mode">
+              <div class="control-row">
                 <span class="label">
-                  Lambda FFT
-                  <el-tooltip content="频域损失权重，帮助学习纹理细节，0=关闭" placement="top">
+                  调度模式
+                  <el-tooltip content="L2 比例随训练进度变化的方式" placement="top">
                     <el-icon class="help-icon"><QuestionFilled /></el-icon>
                   </el-tooltip>
                 </span>
-                <el-slider v-model="config.training.lambda_fft" :min="0" :max="1" :step="0.01" :show-tooltip="false" class="slider-flex" />
-                <el-input-number v-model="config.training.lambda_fft" :min="0" :max="1" :step="0.01" controls-position="right" class="input-fixed" />
+                <el-select v-model="config.acrf.l2_schedule_mode" style="width: 160px">
+                  <el-option value="constant" label="固定值" />
+                  <el-option value="linear_increase" label="渐进增加 (适合蒸馏)" />
+                  <el-option value="linear_decrease" label="渐进减少 (适合Turbo)" />
+                  <el-option value="step" label="自定义阶梯" />
+                </el-select>
               </div>
               <div class="control-row">
                 <span class="label">
-                  Lambda Cosine
-                  <el-tooltip content="余弦相似度损失权重，帮助保持整体结构，0=关闭" placement="top">
+                  起始比例
+                  <el-tooltip content="训练开始时的 L2 比例" placement="top">
                     <el-icon class="help-icon"><QuestionFilled /></el-icon>
                   </el-tooltip>
                 </span>
-                <el-slider v-model="config.training.lambda_cosine" :min="0" :max="1" :step="0.01" :show-tooltip="false" class="slider-flex" />
-                <el-input-number v-model="config.training.lambda_cosine" :min="0" :max="1" :step="0.01" controls-position="right" class="input-fixed" />
+                <el-slider v-model="config.acrf.l2_initial_ratio" :min="0.05" :max="1.0" :step="0.05" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.l2_initial_ratio" :min="0.05" :max="1.0" :step="0.05" controls-position="right" class="input-fixed" />
+              </div>
+              <div class="control-row" v-if="config.acrf.l2_schedule_mode !== 'constant'">
+                <span class="label">
+                  结束比例
+                  <el-tooltip content="训练结束时的 L2 比例" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.l2_final_ratio" :min="0.05" :max="1.0" :step="0.05" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.l2_final_ratio" :min="0.05" :max="1.0" :step="0.05" controls-position="right" class="input-fixed" />
+              </div>
+              <div class="control-row" v-if="config.acrf.l2_schedule_mode === 'step'">
+                <span class="label">
+                  阶梯切换 Epoch
+                  <el-tooltip content="在哪些 epoch 切换 L2 比例 (逗号分隔，如 3,6)" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-input v-model="config.acrf.l2_milestones" placeholder="3,6" style="width: 120px" />
+              </div>
+              <div class="control-row">
+                <span class="label">
+                  L2 包含锚点
+                  <el-tooltip content="L2 损失同时计算锚点时间步，使 L2 覆盖全部时间步" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-switch v-model="config.acrf.l2_include_anchor" />
+              </div>
+              <div class="control-row" v-if="config.acrf.l2_include_anchor">
+                <span class="label">
+                  L2 锚点比例
+                  <el-tooltip content="锚点时间步的 L2 损失权重。这是与 L1 叠加的权重" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.l2_anchor_ratio" :min="0.05" :max="1.0" :step="0.05" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.l2_anchor_ratio" :min="0.05" :max="1.0" :step="0.05" controls-position="right" class="input-fixed" />
               </div>
             </template>
+
+            <div class="subsection-label">Latent Jitter（构图突破）</div>
+            <div class="control-row">
+              <span class="label">
+                Latent Jitter Scale
+                <el-tooltip content="在 x_t 上添加空间抠动，垂直于流线，真正改变构图的关键。推荐 0.03-0.05" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-slider v-model="config.acrf.latent_jitter_scale" :min="0" :max="0.1" :step="0.01" :show-tooltip="false" class="slider-flex" />
+              <el-input-number v-model="config.acrf.latent_jitter_scale" :min="0" :max="0.1" :step="0.01" controls-position="right" class="input-fixed" />
+            </div>
+
+            <div class="subsection-label">损失权重配置（自由组合）</div>
             
-            <!-- Frequency 模式参数 -->
-            <template v-if="config.training.loss_mode === 'frequency' || config.training.loss_mode === 'unified'">
-              <div class="subsection-label">频域感知参数 (FREQUENCY AWARE)</div>
+            <!-- 基础损失: L1 + Cosine (始终显示) -->
+            <div class="control-row">
+              <span class="label">
+                Lambda L1 (Charbonnier)
+                <el-tooltip content="基础L1损失权重，平滑的像素距离损失" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-slider v-model="config.training.lambda_l1" :min="0" :max="2" :step="0.1" :show-tooltip="false" class="slider-flex" />
+              <el-input-number v-model="config.training.lambda_l1" :min="0" :max="2" :step="0.1" controls-position="right" class="input-fixed" />
+            </div>
+            <div class="control-row">
+              <span class="label">
+                Lambda Cosine
+                <el-tooltip content="方向一致性损失权重，约束速度方向正确" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-slider v-model="config.training.lambda_cosine" :min="0" :max="1" :step="0.05" :show-tooltip="false" class="slider-flex" />
+              <el-input-number v-model="config.training.lambda_cosine" :min="0" :max="1" :step="0.05" controls-position="right" class="input-fixed" />
+            </div>
+            
+            <!-- 频域感知损失 (开关+权重+子参数) -->
+            <div class="subsection-label">频域感知损失</div>
+            <div class="control-row">
+              <span class="label">
+                启用频域感知
+                <el-tooltip content="锐化细节纹理，增强高频信息" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-switch v-model="config.training.enable_freq" />
+            </div>
+            <template v-if="config.training.enable_freq">
               <div class="control-row">
                 <span class="label">
-                  高频权重 (alpha_hf)
-                  <el-tooltip content="高频增强权重，提升边缘/纹理锐度，推荐 0.5~1.0" placement="top">
+                  混合权重 (λ_freq)
+                  <el-tooltip content="与基础损失混合的比例" placement="top">
                     <el-icon class="help-icon"><QuestionFilled /></el-icon>
                   </el-tooltip>
                 </span>
+                <el-slider v-model="config.training.lambda_freq" :min="0.1" :max="1" :step="0.1" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.training.lambda_freq" :min="0.1" :max="1" :step="0.1" controls-position="right" class="input-fixed" />
+              </div>
+              <div class="control-row" style="margin-left: 20px;">
+                <span class="label">↳ 高频权重 (alpha_hf)</span>
                 <el-slider v-model="config.training.alpha_hf" :min="0" :max="2" :step="0.1" :show-tooltip="false" class="slider-flex" />
                 <el-input-number v-model="config.training.alpha_hf" :min="0" :max="2" :step="0.1" controls-position="right" class="input-fixed" />
               </div>
-              <div class="control-row">
-                <span class="label">
-                  低频权重 (beta_lf)
-                  <el-tooltip content="低频锁定权重，保持整体结构方向，推荐 0.1~0.3" placement="top">
-                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </span>
+              <div class="control-row" style="margin-left: 20px;">
+                <span class="label">↳ 低频权重 (beta_lf)</span>
                 <el-slider v-model="config.training.beta_lf" :min="0" :max="1" :step="0.05" :show-tooltip="false" class="slider-flex" />
                 <el-input-number v-model="config.training.beta_lf" :min="0" :max="1" :step="0.05" controls-position="right" class="input-fixed" />
               </div>
             </template>
             
-            <!-- Style 模式参数 -->
-            <template v-if="config.training.loss_mode === 'style' || config.training.loss_mode === 'unified'">
-              <div class="subsection-label">风格结构参数 (STYLE STRUCTURE)</div>
+            <!-- 风格结构损失 (开关+权重+子参数) -->
+            <div class="subsection-label">风格结构损失</div>
+            <div class="control-row">
+              <span class="label">
+                启用风格结构
+                <el-tooltip content="学习光影色调、结构布局" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-switch v-model="config.training.enable_style" />
+            </div>
+            <template v-if="config.training.enable_style">
               <div class="control-row">
                 <span class="label">
-                  结构锁 (lambda_struct)
-                  <el-tooltip content="SSIM 结构锁定，防止脸崩/五官错位，推荐 0.5~1.0" placement="top">
+                  混合权重 (λ_style)
+                  <el-tooltip content="与基础损失混合的比例" placement="top">
                     <el-icon class="help-icon"><QuestionFilled /></el-icon>
                   </el-tooltip>
                 </span>
+                <el-slider v-model="config.training.lambda_style" :min="0.1" :max="1" :step="0.1" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.training.lambda_style" :min="0.1" :max="1" :step="0.1" controls-position="right" class="input-fixed" />
+              </div>
+              <div class="control-row" style="margin-left: 20px;">
+                <span class="label">↳ 结构锁 (λ_struct)</span>
                 <el-slider v-model="config.training.lambda_struct" :min="0" :max="2" :step="0.1" :show-tooltip="false" class="slider-flex" />
                 <el-input-number v-model="config.training.lambda_struct" :min="0" :max="2" :step="0.1" controls-position="right" class="input-fixed" />
               </div>
-              <div class="control-row">
-                <span class="label">
-                  光影学习 (lambda_light)
-                  <el-tooltip content="学习大师的 S 曲线、对比度，推荐 0.3~0.8" placement="top">
-                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </span>
+              <div class="control-row" style="margin-left: 20px;">
+                <span class="label">↳ 光影 (λ_light)</span>
                 <el-slider v-model="config.training.lambda_light" :min="0" :max="1" :step="0.1" :show-tooltip="false" class="slider-flex" />
                 <el-input-number v-model="config.training.lambda_light" :min="0" :max="1" :step="0.1" controls-position="right" class="input-fixed" />
               </div>
-              <div class="control-row">
-                <span class="label">
-                  色调迁移 (lambda_color)
-                  <el-tooltip content="学习冷暖调/胶片感，推荐 0.2~0.5" placement="top">
-                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </span>
+              <div class="control-row" style="margin-left: 20px;">
+                <span class="label">↳ 色调 (λ_color)</span>
                 <el-slider v-model="config.training.lambda_color" :min="0" :max="1" :step="0.1" :show-tooltip="false" class="slider-flex" />
                 <el-input-number v-model="config.training.lambda_color" :min="0" :max="1" :step="0.1" controls-position="right" class="input-fixed" />
               </div>
-              <div class="control-row">
-                <span class="label">
-                  质感增强 (lambda_tex)
-                  <el-tooltip content="高频 L1 增强清晰度/颗粒感，推荐 0.3~0.5" placement="top">
-                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
-                  </el-tooltip>
-                </span>
+              <div class="control-row" style="margin-left: 20px;">
+                <span class="label">↳ 质感 (λ_tex)</span>
                 <el-slider v-model="config.training.lambda_tex" :min="0" :max="1" :step="0.1" :show-tooltip="false" class="slider-flex" />
                 <el-input-number v-model="config.training.lambda_tex" :min="0" :max="1" :step="0.1" controls-position="right" class="input-fixed" />
               </div>
             </template>
+
+
 
             <div class="subsection-label">其他高级参数</div>
             <div class="control-row">
@@ -532,15 +868,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { Setting, Refresh, Check, FolderOpened, DataAnalysis, Grid, TrendCharts, Files, Tools, Plus, Delete, Document, InfoFilled, QuestionFilled, Promotion } from '@element-plus/icons-vue'
+import { Setting, Refresh, Check, FolderOpened, DataAnalysis, Grid, TrendCharts, Files, Tools, Plus, Delete, Document, InfoFilled, QuestionFilled, Promotion, Cpu } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const route = useRoute()
 
-const activeNames = ref(['acrf', 'lora', 'training', 'dataset', 'advanced'])
+const activeNames = ref(['model', 'acrf', 'lora', 'training', 'dataset', 'advanced'])
 const loading = ref(false)
 const saving = ref(false)
 const selectedPreset = ref('')
@@ -557,6 +893,10 @@ const saveAsName = ref('')
 // Dataset management
 const cachedDatasets = ref<any[]>([])
 const selectedDataset = ref('')
+const selectedRegDataset = ref('')
+
+// LoRA 列表（用于继续训练功能）
+const loraList = ref<{name: string, path: string, size: number}[]>([])
 
 // System paths (read-only, from env)
 const systemPaths = ref({
@@ -564,21 +904,95 @@ const systemPaths = ref({
   output_base_dir: ''
 })
 
+// 可用模型列表
+type TagType = 'primary' | 'success' | 'warning' | 'info' | 'danger'
+
+const availableModels = ref<Array<{
+  value: string
+  label: string
+  icon: string
+  description: string
+  tag: string
+  tagType: TagType
+  disabled: boolean
+}>>([
+  {
+    value: 'zimage',
+    label: 'Z-Image (Turbo)',
+    icon: '⚡',
+    description: '10 步加速推理，原生 Turbo 模型',
+    tag: '推荐',
+    tagType: 'success',
+    disabled: false
+  },
+  {
+    value: 'longcat',
+    label: 'LongCat-Image',
+    icon: '🐱',
+    description: '基于 FLUX 架构，高质量生成',
+    tag: '新',
+    tagType: 'warning',
+    disabled: false
+  }
+])
+
+// 模型类型显示
+const modelDisplayName = computed(() => {
+  const model = availableModels.value.find(m => m.value === config.value.model_type)
+  return model?.label || 'Z-Image'
+})
+
+const modelTagType = computed((): TagType => {
+  const model = availableModels.value.find(m => m.value === config.value.model_type)
+  return model?.tagType || 'primary'
+})
+
+function selectModelType(type: string) {
+  config.value.model_type = type
+}
+
 // 默认配置结构
 function getDefaultConfig() {
   return {
     name: 'default',
+    model_type: 'zimage',  // 模型类型
     acrf: {
+      enable_turbo: true,  // Turbo 开关
       turbo_steps: 10,
+      // Zimage 参数
       shift: 3.0,
       jitter_scale: 0.02,
-      // Min-SNR 加权参数（所有 loss 模式通用）
+      // Longcat 动态 shift 参数
+      use_dynamic_shifting: true,
+      base_shift: 0.5,
+      max_shift: 1.15,
+      // Min-SNR 加权参数（公用）
       snr_gamma: 5.0,
-      snr_floor: 0.1
+      snr_floor: 0.1,
+      use_anchor: true,
+      // MSE/L2 混合模式参数
+      raft_mode: false,
+      free_stream_ratio: 0.3,
+      // L2 调度参数
+      l2_schedule_mode: 'constant',
+      l2_initial_ratio: 0.3,
+      l2_final_ratio: 0.3,
+      l2_milestones: '',
+      l2_include_anchor: false,
+      l2_anchor_ratio: 0.3,
+      // Latent Jitter (构图突破)
+      latent_jitter_scale: 0.0
     },
     network: {
       dim: 8,
       alpha: 4.0
+    },
+    lora: {
+      resume_training: false,
+      resume_lora_path: '',
+      train_adaln: false,
+      train_norm: false,
+      train_single_stream: false
     },
     optimizer: {
       type: 'AdamW8bit',
@@ -592,19 +1006,23 @@ function getDefaultConfig() {
       lr_scheduler: 'constant',
       lr_warmup_steps: 0,
       lr_num_cycles: 1,
-      // Standard 模式参数
-      lambda_fft: 0,
-      lambda_cosine: 0,
-      // 损失模式
-      loss_mode: 'standard',
-      // 频域感知参数
+      // 基础损失权重
+      lambda_l1: 1.0,
+      lambda_cosine: 0.1,
+      // 频域感知 (开关+权重+子参数)
+      enable_freq: false,
+      lambda_freq: 0.3,
       alpha_hf: 1.0,
       beta_lf: 0.2,
-      // 风格结构参数
+      // 风格结构 (开关+权重+子参数)
+      enable_style: false,
+      lambda_style: 0.3,
       lambda_struct: 1.0,
       lambda_light: 0.5,
       lambda_color: 0.3,
-      lambda_tex: 0.5
+      lambda_tex: 0.5,
+      // 兼容旧参数
+      lambda_fft: 0
     },
     dataset: {
       batch_size: 1,
@@ -612,14 +1030,23 @@ function getDefaultConfig() {
       enable_bucket: true,
       datasets: [] as any[]
     },
+    reg_dataset: {
+      enabled: false,
+      weight: 1.0,
+      ratio: 0.5,
+      datasets: [] as any[]
+    },
     advanced: {
       max_grad_norm: 1.0,
       gradient_checkpointing: true,
+      blocks_to_swap: 0,
       num_train_epochs: 10,
       save_every_n_epochs: 1,
       gradient_accumulation_steps: 4,
       mixed_precision: 'bf16',
-      seed: 42
+      seed: 42,
+      num_gpus: 1,
+      gpu_ids: ''
     }
   }
 }
@@ -640,6 +1067,7 @@ onMounted(async () => {
   
   await loadPresets()
   await loadCachedDatasets()
+  await loadLoraList()  // 加载 LoRA 列表（用于继续训练功能）
 })
 
 // Load list of saved configs
@@ -664,12 +1092,18 @@ async function loadConfig(configName: string) {
       ...res.data,
       acrf: { ...defaultCfg.acrf, ...res.data.acrf },
       network: { ...defaultCfg.network, ...res.data.network },
+      lora: { ...defaultCfg.lora, ...res.data.lora },  // LoRA 配置（包括继续训练）
       optimizer: { ...defaultCfg.optimizer, ...res.data.optimizer },
       training: { ...defaultCfg.training, ...res.data.training },
       dataset: { 
         ...defaultCfg.dataset, 
         ...res.data.dataset,
         datasets: res.data.dataset?.datasets || []
+      },
+      reg_dataset: {
+        ...defaultCfg.reg_dataset,
+        ...res.data.reg_dataset,
+        datasets: res.data.reg_dataset?.datasets || []
       },
       advanced: { ...defaultCfg.advanced, ...res.data.advanced }
     }
@@ -818,6 +1252,16 @@ async function loadCachedDatasets() {
   }
 }
 
+// Load LoRA list for resume training feature
+async function loadLoraList() {
+  try {
+    const res = await axios.get('/api/loras')
+    loraList.value = res.data.loras || []
+  } catch (e) {
+    console.error('Failed to load LoRA list:', e)
+  }
+}
+
 // Add dataset (from selector)
 function onDatasetSelect() {
   if (selectedDataset.value) {
@@ -846,6 +1290,28 @@ function addDataset() {
 // Remove dataset
 function removeDataset(idx: number) {
   config.value.dataset.datasets.splice(idx, 1)
+}
+
+// 正则数据集操作
+function onRegDatasetSelect() {
+  if (selectedRegDataset.value) {
+    config.value.reg_dataset.datasets.push({
+      cache_directory: selectedRegDataset.value,
+      num_repeats: 1
+    })
+    selectedRegDataset.value = ''
+  }
+}
+
+function addRegDataset() {
+  config.value.reg_dataset.datasets.push({
+    cache_directory: '',
+    num_repeats: 1
+  })
+}
+
+function removeRegDataset(idx: number) {
+  config.value.reg_dataset.datasets.splice(idx, 1)
 }
 
 // 解析学习率（支持科学计数法）
@@ -1141,5 +1607,62 @@ function formatLearningRate(value: number): string {
 .empty-datasets p {
   margin: 0;
   font-size: 13px;
+}
+
+/* 模型类型卡片样式 */
+.model-type-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.model-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  border: 2px solid var(--el-border-color-lighter);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: var(--el-bg-color);
+}
+
+.model-card:hover:not(.disabled) {
+  border-color: var(--el-color-primary-light-5);
+  background: var(--el-color-primary-light-9);
+}
+
+.model-card.active {
+  border-color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+  box-shadow: 0 0 0 3px var(--el-color-primary-light-7);
+}
+
+.model-card.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.model-icon {
+  font-size: 32px;
+  flex-shrink: 0;
+}
+
+.model-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.model-name {
+  font-weight: 600;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.model-desc {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4;
 }
 </style>

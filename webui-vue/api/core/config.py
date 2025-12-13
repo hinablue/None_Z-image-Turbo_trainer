@@ -19,16 +19,72 @@ load_dotenv(PROJECT_ROOT / ".env")
 # 从 .env 读取路径配置 (支持相对路径)
 def _resolve_path(env_key: str, default: str) -> Path:
     """解析路径，支持相对路径（相对于项目根目录）"""
-    p = Path(os.getenv(env_key, default))
+    value = os.getenv(env_key, "")
+    if not value:
+        value = default
+    if not value:  # 如果仍然为空，返回 None
+        return None
+    p = Path(value)
     if not p.is_absolute():
         p = PROJECT_ROOT / p
     return p
 
+# ============================================================================
+# Z-Image 模型路径
+# ============================================================================
 MODEL_PATH = _resolve_path("MODEL_PATH", "./zimage_models")
-LORA_PATH = _resolve_path("LORA_PATH", "./output")
-DATASETS_DIR = _resolve_path("DATASET_PATH", "./datasets")
+VAE_PATH = _resolve_path("VAE_PATH", "") or MODEL_PATH / "vae"
+TEXT_ENCODER_PATH = _resolve_path("TEXT_ENCODER_PATH", "") or MODEL_PATH / "text_encoder"
+TRANSFORMER_PATH = _resolve_path("TRANSFORMER_PATH", "") or MODEL_PATH / "transformer"
 
-OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+# ============================================================================
+# LongCat-Image 模型路径
+# ============================================================================
+LONGCAT_MODEL_PATH = _resolve_path("LONGCAT_MODEL_PATH", "./longcat_models")
+LONGCAT_VAE_PATH = _resolve_path("LONGCAT_VAE_PATH", "") or LONGCAT_MODEL_PATH / "vae"
+LONGCAT_TEXT_ENCODER_PATH = _resolve_path("LONGCAT_TEXT_ENCODER_PATH", "") or LONGCAT_MODEL_PATH / "text_encoder"
+LONGCAT_TRANSFORMER_PATH = _resolve_path("LONGCAT_TRANSFORMER_PATH", "") or LONGCAT_MODEL_PATH / "transformer"
+
+# ============================================================================
+# 多模型路径映射
+# ============================================================================
+MODEL_PATHS = {
+    "zimage": {
+        "base": MODEL_PATH,
+        "vae": VAE_PATH,
+        "text_encoder": TEXT_ENCODER_PATH,
+        "transformer": TRANSFORMER_PATH,
+    },
+    "longcat": {
+        "base": LONGCAT_MODEL_PATH,
+        "vae": LONGCAT_VAE_PATH,
+        "text_encoder": LONGCAT_TEXT_ENCODER_PATH,
+        "transformer": LONGCAT_TRANSFORMER_PATH,
+    }
+}
+
+def get_model_path(model_type: str, component: str = "base") -> Path:
+    """获取指定模型的路径
+    
+    Args:
+        model_type: 模型类型 (zimage, longcat)
+        component: 组件类型 (base, vae, text_encoder, transformer)
+    
+    Returns:
+        对应路径
+    """
+    if model_type not in MODEL_PATHS:
+        model_type = "zimage"
+    return MODEL_PATHS[model_type].get(component, MODEL_PATHS[model_type]["base"])
+
+# ============================================================================
+# 其他路径
+# ============================================================================
+LORA_PATH = _resolve_path("LORA_PATH", "./output")  # LoRA 模型输出目录
+DATASETS_DIR = _resolve_path("DATASET_PATH", "./datasets")
+GENERATION_OUTPUT_PATH = _resolve_path("GENERATION_OUTPUT_PATH", "./outputs")  # 图片生成输出路径
+
+OUTPUTS_DIR = GENERATION_OUTPUT_PATH  # 图片生成输出目录
 CONFIGS_DIR = PROJECT_ROOT / "configs"
 OUTPUT_BASE_DIR = LORA_PATH  # LoRA 输出目录
 
@@ -37,6 +93,25 @@ OUTPUTS_DIR.mkdir(exist_ok=True)
 CONFIGS_DIR.mkdir(exist_ok=True)
 DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 LORA_PATH.mkdir(parents=True, exist_ok=True)
+
+# ============================================================================
+# 启动时路径诊断日志
+# ============================================================================
+print("=" * 60)
+print("[CONFIG] 路径配置诊断")
+print("=" * 60)
+print(f"[CONFIG] PROJECT_ROOT     = {PROJECT_ROOT}")
+print(f"[CONFIG] .env 文件路径     = {PROJECT_ROOT / '.env'}")
+print(f"[CONFIG] .env 文件存在     = {(PROJECT_ROOT / '.env').exists()}")
+print("-" * 60)
+print(f"[CONFIG] DATASET_PATH env = {os.getenv('DATASET_PATH', '<未设置>')}")
+print(f"[CONFIG] DATASETS_DIR     = {DATASETS_DIR}")
+print(f"[CONFIG] DATASETS_DIR 存在 = {DATASETS_DIR.exists()}")
+print("-" * 60)
+print(f"[CONFIG] LORA_PATH env    = {os.getenv('LORA_PATH', '<未设置>')}")
+print(f"[CONFIG] LORA_PATH        = {LORA_PATH}")
+print(f"[CONFIG] LORA_PATH 存在   = {LORA_PATH.exists()}")
+print("=" * 60)
 
 # ============================================================================
 # Pydantic Models
@@ -97,6 +172,7 @@ class GenerationRequest(BaseModel):
     lora_path: Optional[str] = None
     lora_scale: float = 1.0
     comparison_mode: bool = False
+    model_type: str = "zimage"  # 支持: zimage, longcat
 
 class DeleteHistoryRequest(BaseModel):
     timestamps: List[str]

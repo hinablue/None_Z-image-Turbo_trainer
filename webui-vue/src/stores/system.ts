@@ -45,6 +45,11 @@ export interface DownloadStatus {
   status: 'idle' | 'running' | 'completed' | 'failed'
   progress: number
   downloaded_size_gb: number
+  total_size_gb?: number
+  speed?: number
+  speed_unit?: string
+  model_type?: string   // 正在下载的模型类型
+  model_name?: string   // 正在下载的模型名称
   currentFile?: string
 }
 

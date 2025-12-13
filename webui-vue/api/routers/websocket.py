@@ -98,7 +98,7 @@ class ConnectionManager:
                     )
                 
                 # 读取下载进程输出
-                if state.download_process and state.download_process.poll() is None:
+                if state.download_process:
                     await self._read_process_output(
                         state.download_process, "download_log", parse_download_progress
                     )
@@ -211,6 +211,10 @@ class ConnectionManager:
         elif log_type == "cache_text_log" and progress:
             self._update_cache_progress("text", progress)
         
+        # 更新下载进度（用于总进度显示）
+        if log_type == "download_log" and progress:
+            self._update_download_progress(progress)
+        
         await self.broadcast({
             "type": log_type,
             "timestamp": datetime.now().isoformat(),
@@ -229,6 +233,21 @@ class ConnectionManager:
             print(f"[Cache] Updated {cache_type}: {state.cache_progress[cache_type]}", flush=True)
         elif progress.get("type") == "percent":
             state.update_cache_progress(cache_type, progress=progress.get("value", 0))
+    
+    def _update_download_progress(self, progress: Dict[str, Any]):
+        """更新下载进度"""
+        if progress.get("type") == "total_progress":
+            state.update_download_progress(
+                progress=progress.get("percent", 0),
+                downloaded_gb=progress.get("downloaded_gb", 0),
+                total_gb=progress.get("total_gb", 32),
+                speed=progress.get("speed", 0),
+                speed_unit=progress.get("speed_unit", "MB")
+            )
+        elif progress.get("type") == "percent":
+            state.update_download_progress(progress=progress.get("value", 0))
+        elif progress.get("type") == "complete":
+            state.update_download_progress(progress=100)
     
     def _update_training_history(self, progress: Dict[str, Any]):
         """更新训练历史数据（用于图表持久化）"""
@@ -453,6 +472,65 @@ def parse_download_progress(line: str) -> Optional[Dict[str, Any]]:
     """解析下载进度信息"""
     import re
     
+    # 匹配新格式: [PROGRESS] 50.0% | 16.00 GB / 32.00 GB | 10.5 MB/s
+    simple_progress = re.search(
+        r'\[PROGRESS\]\s*(\d+(?:\.\d+)?)%\s*\|\s*([0-9.]+)\s*GB\s*/\s*([0-9.]+)\s*GB\s*\|\s*([0-9.]+)\s*MB/s',
+        line, re.IGNORECASE
+    )
+    if simple_progress:
+        return {
+            "type": "total_progress",
+            "percent": float(simple_progress.group(1)),
+            "downloaded_gb": float(simple_progress.group(2)),
+            "total_gb": float(simple_progress.group(3)),
+            "speed": float(simple_progress.group(4)),
+            "speed_unit": "MB"
+        }
+    
+    # 匹配旧格式: [PROGRESS] [...] 50.0% | 16.00 GB/32.00 GB | 10.5 MB/s | 下载中...
+    # 使用非贪婪匹配,支持中文状态描述
+    progress_match = re.search(
+        r'\[PROGRESS\].*?(\d+(?:\.\d+)?)%\s*\|\s*([0-9.]+)\s*(MB|GB)/([0-9.]+)\s*(MB|GB)\s*\|\s*([0-9.]+)\s*(MB|KB)/s',
+        line, re.IGNORECASE
+    )
+    if progress_match:
+        downloaded = float(progress_match.group(2))
+        downloaded_unit = progress_match.group(3).upper()
+        total = float(progress_match.group(4))
+        total_unit = progress_match.group(5).upper()
+        speed = float(progress_match.group(6))
+        speed_unit = progress_match.group(7).upper()
+        
+        # 统一转换为 GB
+        if downloaded_unit == "MB":
+            downloaded /= 1024
+        if total_unit == "MB":
+            total /= 1024
+            
+        return {
+            "type": "total_progress",
+            "percent": float(progress_match.group(1)),
+            "downloaded_gb": downloaded,
+            "total_gb": total,
+            "speed": speed,
+            "speed_unit": speed_unit
+        }
+    
+    # 匹配简化的新格式: [PROGRESS] [...] 50.0%
+    simple_progress = re.search(r'\[PROGRESS\].*?(\d+(?:\.\d+)?)%', line)
+    if simple_progress:
+        return {
+            "type": "percent",
+            "value": float(simple_progress.group(1))
+        }
+    
+    # 匹配下载完成: [PROGRESS] Download complete!
+    if "[PROGRESS] Download complete" in line:
+        return {
+            "type": "complete",
+            "percent": 100
+        }
+    
     # 匹配百分比: "50%" 或 "Downloading: 50%"
     percent_match = re.search(r'(\d+(?:\.\d+)?)%', line)
     if percent_match:
@@ -544,12 +622,14 @@ def parse_cache_progress(line: str) -> Optional[Dict[str, Any]]:
 
 
 async def get_gpu_info() -> Dict[str, Any]:
-    """获取 GPU 信息"""
+    """获取 GPU 信息 (支持多卡)"""
+    gpus = []
+    
     try:
         result = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: subprocess.run(
-                ["nvidia-smi", "--query-gpu=name,memory.total,memory.used,utilization.gpu,temperature.gpu",
+                ["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu",
                  "--format=csv,noheader,nounits"],
                 capture_output=True,
                 text=True,
@@ -560,29 +640,69 @@ async def get_gpu_info() -> Dict[str, Any]:
         )
         
         if result.returncode == 0:
-            parts = result.stdout.strip().split(", ")
-            if len(parts) >= 5:
-                memory_total = float(parts[1]) / 1024  # MB -> GB
-                memory_used = float(parts[2]) / 1024
-                return {
-                    "name": parts[0],
-                    "memoryTotal": round(memory_total, 1),
-                    "memoryUsed": round(memory_used, 1),
-                    "memoryPercent": round((memory_used / memory_total) * 100),
-                    "utilization": int(parts[3]),
-                    "temperature": int(parts[4])
-                }
+            lines = result.stdout.strip().split("\n")
+            for line in lines:
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 6:
+                    try:
+                        gpu_index = int(parts[0])
+                        memory_total = float(parts[2]) / 1024  # MB -> GB
+                        memory_used = float(parts[3]) / 1024
+                        gpus.append({
+                            "index": gpu_index,
+                            "name": parts[1],
+                            "memoryTotal": round(memory_total, 1),
+                            "memoryUsed": round(memory_used, 1),
+                            "memoryPercent": round((memory_used / memory_total) * 100) if memory_total > 0 else 0,
+                            "utilization": int(parts[4]) if parts[4].strip() else 0,
+                            "temperature": int(parts[5]) if parts[5].strip() else 0
+                        })
+                    except (ValueError, IndexError) as e:
+                        print(f"[GPU] Failed to parse line '{line}': {e}")
+                        continue
     except Exception as e:
         print(f"GPU info error: {e}")
     
-    return {
-        "name": "Unknown",
-        "memoryTotal": 0,
-        "memoryUsed": 0,
-        "memoryPercent": 0,
-        "utilization": 0,
-        "temperature": 0
-    }
+    # 返回格式兼容旧版（单卡）和新版（多卡）
+    if len(gpus) == 0:
+        return {
+            "name": "Unknown",
+            "memoryTotal": 0,
+            "memoryUsed": 0,
+            "memoryPercent": 0,
+            "utilization": 0,
+            "temperature": 0,
+            "gpus": [],
+            "count": 0
+        }
+    elif len(gpus) == 1:
+        gpu = gpus[0]
+        return {
+            "name": gpu["name"],
+            "memoryTotal": gpu["memoryTotal"],
+            "memoryUsed": gpu["memoryUsed"],
+            "memoryPercent": gpu["memoryPercent"],
+            "utilization": gpu["utilization"],
+            "temperature": gpu["temperature"],
+            "gpus": gpus,
+            "count": 1
+        }
+    else:
+        total_memory = sum(g["memoryTotal"] for g in gpus)
+        used_memory = sum(g["memoryUsed"] for g in gpus)
+        avg_utilization = sum(g["utilization"] for g in gpus) // len(gpus)
+        max_temp = max(g["temperature"] for g in gpus)
+        
+        return {
+            "name": f"{len(gpus)}x {gpus[0]['name']}",
+            "memoryTotal": round(total_memory, 1),
+            "memoryUsed": round(used_memory, 1),
+            "memoryPercent": round((used_memory / total_memory) * 100) if total_memory > 0 else 0,
+            "utilization": avg_utilization,
+            "temperature": max_temp,
+            "gpus": gpus,
+            "count": len(gpus)
+        }
 
 
 # 缓存系统信息（不经常变化）
@@ -696,29 +816,24 @@ def get_download_status() -> Dict[str, Any]:
     return_code = state.download_process.poll()
     
     if return_code is None:
-        # 获取模型目录大小来估算进度
-        model_path = Path(MODEL_PATH)
-        total_size = 0
-        if model_path.exists():
-            for f in model_path.rglob("*"):
-                if f.is_file():
-                    total_size += f.stat().st_size
-        
-        # 预估总大小约 30GB
-        estimated_total = 30 * 1024 * 1024 * 1024
-        progress = min(100, round(total_size / estimated_total * 100, 1))
+        # 进程运行中 - 从 state 获取下载进度
+        dp = state.get_download_progress()
         
         return {
             "status": "running",
-            "progress": progress,
-            "downloaded_size": total_size,
-            "downloaded_size_gb": round(total_size / (1024**3), 2)
+            "progress": dp.get("progress", 0),
+            "downloaded_size_gb": dp.get("downloaded_gb", 0),
+            "total_size_gb": dp.get("total_gb", 32),
+            "speed": dp.get("speed", 0),
+            "speed_unit": dp.get("speed_unit", "MB"),
+            "model_type": dp.get("model_type", ""),
+            "model_name": dp.get("model_name", "")
         }
     elif return_code == 0:
-        state.download_process = None
+        # 进程成功退出 - 标记为完成
         return {"status": "completed", "progress": 100}
     else:
-        state.download_process = None
+        # 进程失败退出
         return {"status": "failed", "code": return_code}
 
 

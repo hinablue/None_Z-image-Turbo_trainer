@@ -28,7 +28,7 @@ from safetensors.torch import save_file
 
 from zimage_trainer.acrf_trainer import ACRFTrainer
 from zimage_trainer.utils.zimage_utils import load_transformer
-from zimage_trainer.dataset.dataloader import create_dataloader
+from zimage_trainer.dataset.dataloader import create_dataloader, create_reg_dataloader, get_reg_config
 from zimage_trainer.utils.memory_optimizer import MemoryOptimizer
 from zimage_trainer.utils.hardware_detector import HardwareDetector
 
@@ -396,6 +396,19 @@ def main():
     dataloader = create_dataloader(args)
     logger.info(f"数据集大小: {len(dataloader)} batches")
 
+    # 正则数据集加载 (防止过拟合)
+    reg_dataloader = create_reg_dataloader(args)
+    reg_config = get_reg_config(args)
+    reg_iterator = None
+    if reg_dataloader:
+        reg_weight = reg_config.get('weight', 1.0)
+        reg_ratio = reg_config.get('ratio', 0.5)
+        logger.info(f"  [REG] 正则数据集已加载: {len(reg_dataloader)} batches, weight={reg_weight}, ratio={reg_ratio}")
+    else:
+        reg_weight = 0.0
+        reg_ratio = 0.0
+        logger.info("  [REG] 未启用正则数据集")
+
     # 7. 计算训练步数
     num_update_steps_per_epoch = math.ceil(len(dataloader) / args.gradient_accumulation_steps)
     args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
@@ -405,8 +418,9 @@ def main():
     logger.info(f"  Gradient Accumulation = {args.gradient_accumulation_steps}")
     logger.info(f"  Total Optimization Steps = {args.max_train_steps}")
 
-    # 打印总步数供前端解析
-    print(f"[TRAINING_INFO] total_steps={args.max_train_steps} total_epochs={args.num_train_epochs}", flush=True)
+    # 打印总步数供前端解析 (只让主进程打印)
+    if accelerator.is_main_process:
+        print(f"[TRAINING_INFO] total_steps={args.max_train_steps} total_epochs={args.num_train_epochs}", flush=True)
 
     # 8. 创建优化器
     logger.info(f"\n[SETUP] 初始化优化器: {args.optimizer_type}")
@@ -625,8 +639,51 @@ def main():
 
                 current_lr = lr_scheduler.get_last_lr()[0]
 
-                # 打印进度
-                print(f"[STEP] {global_step}/{args.max_train_steps} epoch={epoch+1}/{args.num_train_epochs} loss={current_loss:.4f} ema_loss={ema_loss:.4f} lr={current_lr:.2e}", flush=True)
+                # 打印进度 (只让主进程打印，避免多卡日志混乱)
+                if accelerator.is_main_process:
+                    print(f"[STEP] {global_step}/{args.max_train_steps} epoch={epoch+1}/{args.num_train_epochs} loss={current_loss:.4f} ema={ema_loss:.4f} l1=0.0000 cos={args.lambda_cosine:.4f} freq={args.lambda_fft:.4f} style=0.0000 L2=0.0000 lr={current_lr:.2e}", flush=True)
+
+                # ========== 正则训练步骤 (按比例执行) ==========
+                if reg_dataloader and reg_ratio > 0:
+                    reg_interval = max(1, int(1.0 / reg_ratio))
+                    if global_step % reg_interval == 0:
+                        if reg_iterator is None:
+                            reg_iterator = iter(reg_dataloader)
+                        try:
+                            reg_batch = next(reg_iterator)
+                        except StopIteration:
+                            reg_iterator = iter(reg_dataloader)
+                            reg_batch = next(reg_iterator)
+
+                        with accelerator.accumulate(transformer):
+                            reg_latents = reg_batch['latents'].to(accelerator.device, dtype=weight_dtype)
+                            reg_vl_embed = reg_batch['vl_embed']
+                            reg_vl_embed = [v.to(accelerator.device, dtype=weight_dtype) for v in reg_vl_embed]
+
+                            reg_noise = torch.randn_like(reg_latents)
+                            reg_noisy, reg_t, reg_target = acrf_trainer.sample_batch(
+                                reg_latents, reg_noise, jitter_scale=args.jitter_scale
+                            )
+
+                            reg_input = reg_noisy.unsqueeze(2)
+                            reg_input_list = list(reg_input.unbind(dim=0))
+                            reg_t_norm = (1000 - reg_t) / 1000.0
+
+                            reg_pred_list = transformer(
+                                x=reg_input_list,
+                                t=reg_t_norm.to(dtype=weight_dtype),
+                                cap_feats=reg_vl_embed,
+                            )[0]
+                            reg_pred = -torch.stack(reg_pred_list, dim=0).squeeze(2)
+
+                            import torch.nn.functional as F
+                            reg_loss = F.mse_loss(reg_pred, reg_target) * reg_weight
+                            accelerator.backward(reg_loss)
+
+                        if accelerator.sync_gradients:
+                            accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
+                            optimizer.step()
+                            optimizer.zero_grad()
 
             # 定期清理显存
             if step % 50 == 0:

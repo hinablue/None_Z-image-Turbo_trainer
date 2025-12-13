@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from core.config import CONFIGS_DIR, OUTPUT_BASE_DIR, MODEL_PATH, SaveConfigRequest, PROJECT_ROOT
+from core.config import CONFIGS_DIR, OUTPUT_BASE_DIR, MODEL_PATH, SaveConfigRequest, PROJECT_ROOT, get_model_path
 from core import state
 
 router = APIRouter(prefix="/api/training", tags=["training"])
@@ -24,13 +24,19 @@ def get_default_config():
     """Get default training configuration"""
     return {
         "name": "default",
+        # 模型类型：zimage, longcat, flux (未来支持)
+        "model_type": "zimage",
         "acrf": {
             "turbo_steps": 10,
             "shift": 3.0,
             "jitter_scale": 0.02,
             # Min-SNR 加权参数（所有 loss 模式通用）
             "snr_gamma": 5.0,
-            "snr_floor": 0.1
+            "snr_floor": 0.1,
+            # 是否使用锚点采样
+            "use_anchor": True,
+            # 动态 shift (LongCat 专用)
+            "use_dynamic_shifting": True
         },
         "network": {
             "dim": 16,
@@ -43,22 +49,26 @@ def get_default_config():
             "output_name": "zimage-lora",
             "learning_rate": 0.0001,
             "weight_decay": 0,
-            "lr_scheduler": "constant",  # 少样本训练推荐 constant，cosine 需谨慎设置 warmup
-            "lr_warmup_steps": 0,  # 默认不预热，少样本场景预热步数应 < 5% 总步数
+            "lr_scheduler": "constant",
+            "lr_warmup_steps": 0,
             "lr_num_cycles": 1,
-            # Standard 模式参数
-            "lambda_fft": 0,
-            "lambda_cosine": 0,
-            # 损失模式
-            "loss_mode": "standard",
-            # 频域感知参数
+            # 基础损失权重
+            "lambda_l1": 1.0,
+            "lambda_cosine": 0.1,
+            # 频域感知 (开关+权重+子参数)
+            "enable_freq": False,
+            "lambda_freq": 0.3,
             "alpha_hf": 1.0,
             "beta_lf": 0.2,
-            # 风格结构参数
+            # 风格结构 (开关+权重+子参数)
+            "enable_style": False,
+            "lambda_style": 0.3,
             "lambda_struct": 1.0,
             "lambda_light": 0.5,
             "lambda_color": 0.3,
-            "lambda_tex": 0.5
+            "lambda_tex": 0.5,
+            # 兼容旧参数
+            "lambda_fft": 0
         },
         "dataset": {
             "batch_size": 1,
@@ -262,13 +272,40 @@ async def get_training_presets():
     ]
     return {"presets": presets}
 
-def check_dataset_cache(config: Dict[str, Any]) -> Dict[str, Any]:
-    """检查数据集缓存状态（同步函数）"""
+def get_cache_suffixes(model_type: str) -> tuple:
+    """获取模型对应的缓存文件后缀
+    
+    Args:
+        model_type: 模型类型 (zimage, longcat)
+    
+    Returns:
+        (latent_suffix_pattern, text_suffix): 
+        - latent_suffix_pattern: latent缓存的glob模式 (如 "_*_zi.safetensors")
+        - text_suffix: text缓存的后缀 (如 "_zi_te.safetensors")
+    """
+    suffixes = {
+        "zimage": ("_*_zi.safetensors", "_zi_te.safetensors"),
+        "longcat": ("_*_lc.safetensors", "_lc_te.safetensors"),
+    }
+    return suffixes.get(model_type, ("_*_zi.safetensors", "_zi_te.safetensors"))
+
+
+    
+def check_dataset_cache(config: Dict[str, Any], model_type: str = "zimage") -> Dict[str, Any]:
+    """检查数据集缓存状态（支持多模型）
+    
+    Args:
+        config: 训练配置
+        model_type: 模型类型 (zimage, longcat, flux)
+    """
     dataset_cfg = config.get("dataset", {})
     datasets = dataset_cfg.get("datasets", [])
     
     if not datasets:
         return {"has_cache": True, "message": "No datasets configured"}
+    
+    # 获取模型对应的缓存后缀
+    latent_pattern, text_suffix = get_cache_suffixes(model_type)
     
     total_images = 0
     latent_cached = 0
@@ -285,20 +322,24 @@ def check_dataset_cache(config: Dict[str, Any]) -> Dict[str, Any]:
         if not dataset_path.exists():
             continue
         
-        # 统计图片和缓存
-        for f in dataset_path.rglob("*"):
-            if f.is_file() and f.suffix.lower() in image_extensions:
-                total_images += 1
-                stem = f.stem
-                parent = f.parent
-                
-                # 检查 latent 缓存
-                if list(parent.glob(f"{stem}_*_zi.safetensors")):
-                    latent_cached += 1
-                
-                # 检查 text 缓存 (格式: {name}_zi_te.safetensors)
-                if list(parent.glob(f"{stem}_zi_te.safetensors")):
-                    text_cached += 1
+        # 方法1: 统计源图片数量
+        source_images = list(dataset_path.rglob("*"))
+        source_images = [f for f in source_images if f.is_file() and f.suffix.lower() in image_extensions]
+        total_images += len(source_images)
+        
+        # 方法2: 直接统计缓存文件数量 (更可靠)
+        # Latent 缓存: *_*_zi.safetensors 或 *_*_lc.safetensors
+        latent_files = list(dataset_path.rglob(f"*{latent_pattern}"))
+        latent_cached += len(latent_files)
+        
+        # Text 缓存: *_zi_te.safetensors 或 *_lc_te.safetensors
+        text_files = list(dataset_path.rglob(f"*{text_suffix}"))
+        text_cached += len(text_files)
+    
+    # 如果没有源图片但有缓存，使用缓存数量作为基准
+    # (用户可能只复制了缓存文件)
+    if total_images == 0 and latent_cached > 0:
+        total_images = latent_cached
     
     has_cache = latent_cached > 0 and text_cached > 0
     
@@ -307,8 +348,9 @@ def check_dataset_cache(config: Dict[str, Any]) -> Dict[str, Any]:
         "total_images": total_images,
         "latent_cached": latent_cached,
         "text_cached": text_cached,
-        "latent_missing": total_images - latent_cached,
-        "text_missing": total_images - text_cached
+        "latent_missing": max(0, total_images - latent_cached),
+        "text_missing": max(0, total_images - text_cached),
+        "model_type": model_type
     }
 
 
@@ -352,52 +394,89 @@ async def start_training(config: Dict[str, Any]):
                 torch.cuda.empty_cache()
             state.add_log("生成模型已卸载", "info")
         
-        # 检查缓存状态
-        cache_info = check_dataset_cache(config)
-        if not cache_info["has_cache"]:
-            state.add_log(f"缓存不完整: Latent {cache_info['latent_cached']}/{cache_info['total_images']}, Text {cache_info['text_cached']}/{cache_info['total_images']}", "warning")
+        # 获取模型类型
+        model_type = config.get("model_type", "zimage")
+        
+        # 检查缓存状态(传递model_type)
+        cache_info = check_dataset_cache(config, model_type)
+        if not cache_info.get("has_cache", False):
+            state.add_log(f"缓存不完整 ({model_type}): Latent {cache_info.get('latent_cached', 0)}/{cache_info.get('total_images', 0)}, Text {cache_info.get('text_cached', 0)}/{cache_info.get('total_images', 0)}", "warning")
             return {
                 "success": False,
                 "needs_cache": True,
-                "total_images": cache_info["total_images"],
-                "latent_cached": cache_info["latent_cached"],
-                "text_cached": cache_info["text_cached"],
-                "latent_missing": cache_info["latent_missing"],
-                "text_missing": cache_info["text_missing"],
+                "total_images": cache_info.get("total_images", 0),
+                "latent_cached": cache_info.get("latent_cached", 0),
+                "text_cached": cache_info.get("text_cached", 0),
+                "latent_missing": cache_info.get("latent_missing", 0),
+                "text_missing": cache_info.get("text_missing", 0),
                 "message": f"缓存不完整，需要先生成缓存"
             }
         
-        state.add_log(f"缓存检查通过: {cache_info['latent_cached']} latent, {cache_info['text_cached']} text", "info")
+        state.add_log(f"缓存检查通过: {cache_info.get('latent_cached', 0)} latent, {cache_info.get('text_cached', 0)} text", "info")
+        
+        # 获取模型类型
+        model_type = config.get("model_type", "zimage")
         
         # 生成 TOML 配置文件
         config_path = CONFIGS_DIR / "current_training.toml"
-        toml_content = generate_acrf_toml_config(config)
+        toml_content = generate_training_toml_config(config, model_type)
         
         with open(config_path, "w", encoding="utf-8") as f:
             f.write(toml_content)
         
-        state.add_log(f"AC-RF 配置已生成: {config_path}", "info")
+        state.add_log(f"训练配置已生成: {config_path} (模型: {model_type})", "info")
         
         # 构建 accelerate launch 命令
-        # 使用 scripts/train_acrf.py (AC-RF 训练脚本)
         python_exe = sys.executable
-        train_script = PROJECT_ROOT / "scripts" / "train_acrf.py"
-        
         mixed_precision = config.get("advanced", {}).get("mixed_precision", "bf16")
         
-        cmd = [
+        # 多卡训练参数
+        num_gpus = config.get("advanced", {}).get("num_gpus", 1)
+        gpu_ids = config.get("advanced", {}).get("gpu_ids", "")  # 如 "0,1,2"
+        
+        # 根据模型类型选择对应的训练脚本
+        if model_type == "zimage":
+            # Z-Image 使用 AC-RF V2 训练脚本 (重构优化版)
+            train_script = PROJECT_ROOT / "scripts" / "train_zimage_v2.py"
+        elif model_type == "longcat":
+            # LongCat-Image 使用独立训练脚本
+            train_script = PROJECT_ROOT / "scripts" / "train_longcat.py"
+        else:
+            # 其他模型（未来扩展）
+            raise HTTPException(status_code=400, detail=f"不支持的模型类型: {model_type}")
+        
+        # 构建 accelerate 参数
+        accelerate_args = [
             python_exe, "-m", "accelerate.commands.launch",
             "--mixed_precision", mixed_precision,
-            str(train_script),
-            "--config", str(config_path)
         ]
         
+        # 多卡配置
+        if num_gpus > 1:
+            accelerate_args.extend(["--multi_gpu", "--num_processes", str(num_gpus)])
+            if gpu_ids:
+                # 设置 CUDA_VISIBLE_DEVICES
+                state.add_log(f"多卡训练: {num_gpus} GPUs, GPU IDs: {gpu_ids}", "info")
+            else:
+                state.add_log(f"多卡训练: {num_gpus} GPUs (自动选择)", "info")
+        elif gpu_ids:
+            # 单卡但指定了 ID
+            state.add_log(f"单卡训练: GPU {gpu_ids}", "info")
+        
+        # 添加训练脚本和配置
+        cmd = accelerate_args + [str(train_script), "--config", str(config_path)]
+        
         state.add_log(f"启动命令: {' '.join(cmd)}", "info")
-        state.add_log(f"混合精度: {mixed_precision}", "info")
+        state.add_log(f"模型类型: {model_type}, 混合精度: {mixed_precision}", "info")
         
         # 启动训练进程
         env = os.environ.copy()
         env["PYTHONUNBUFFERED"] = "1"
+        
+        # 设置 GPU ID
+        if gpu_ids:
+            env["CUDA_VISIBLE_DEVICES"] = gpu_ids
+            state.add_log(f"CUDA_VISIBLE_DEVICES={gpu_ids}", "info")
         
         state.training_process = subprocess.Popen(
             cmd,
@@ -412,13 +491,15 @@ async def start_training(config: Dict[str, Any]):
             creationflags=_get_subprocess_flags()
         )
         
-        state.add_log(f"AC-RF 训练进程已启动 (PID: {state.training_process.pid})", "success")
+        model_name = {"zimage": "Z-Image", "longcat": "LongCat-Image", "flux": "FLUX"}.get(model_type, model_type)
+        state.add_log(f"{model_name} 训练进程已启动 (PID: {state.training_process.pid})", "success")
         
         return {
             "success": True,
-            "message": "AC-RF 训练已启动",
+            "message": f"{model_name} 训练已启动",
             "pid": state.training_process.pid,
-            "config_path": str(config_path)
+            "config_path": str(config_path),
+            "model_type": model_type
         }
         
     except Exception as e:
@@ -426,36 +507,85 @@ async def start_training(config: Dict[str, Any]):
         raise HTTPException(status_code=500, detail=f"启动训练失败: {str(e)}")
 
 
-def generate_acrf_toml_config(config: Dict[str, Any]) -> str:
+def generate_training_toml_config(config: Dict[str, Any], model_type: str = "zimage") -> str:
     """
-    将前端配置转换为 AC-RF 训练 TOML 格式（包含 dataset 配置）
+    将前端配置转换为训练 TOML 格式（支持多模型）
     
-    匹配 scripts/train_acrf.py 的参数格式
-    所有配置合并到一个 TOML 文件中
+    Args:
+        config: 前端配置
+        model_type: 模型类型 (zimage, longcat, flux)
+    
+    Returns:
+        TOML 配置字符串
     """
     
     # 获取数据集配置
     dataset_cfg = config.get("dataset", {})
     datasets = dataset_cfg.get("datasets", [])
     
+    model_names = {"zimage": "Z-Image", "longcat": "LongCat-Image", "flux": "FLUX"}
+    model_name = model_names.get(model_type, model_type)
+    
     toml_lines = [
-        "# Z-Image AC-RF 训练配置 (自动生成)",
+        f"# {model_name} 训练配置 (自动生成)",
         f"# 生成时间: {datetime.now().isoformat()}",
+        f"# 模型类型: {model_type}",
         "",
         "[model]",
-        f'dit = "{str(MODEL_PATH / "transformer").replace(chr(92), "/")}"',
+        f'model_type = "{model_type}"',
+        f'dit = "{str(get_model_path(model_type, "transformer")).replace(chr(92), "/")}"',
         f'output_dir = "{str(OUTPUT_BASE_DIR).replace(chr(92), "/")}"',
         "",
         "[acrf]",
+        f"enable_turbo = {'true' if config.get('acrf', {}).get('enable_turbo', True) else 'false'}",
         f"turbo_steps = {config.get('acrf', {}).get('turbo_steps', 10)}",
         f"shift = {config.get('acrf', {}).get('shift', 3.0)}",
         f"jitter_scale = {config.get('acrf', {}).get('jitter_scale', 0.02)}",
         f"snr_gamma = {config.get('acrf', {}).get('snr_gamma', 5.0)}",
         f"snr_floor = {config.get('acrf', {}).get('snr_floor', 0.1)}",
+        f"use_anchor = {'true' if config.get('acrf', {}).get('use_anchor', True) else 'false'}",
+        f"use_dynamic_shifting = {'true' if config.get('acrf', {}).get('use_dynamic_shifting', True) else 'false'}",
+        f"base_shift = {config.get('acrf', {}).get('base_shift', 0.5)}",
+        f"max_shift = {config.get('acrf', {}).get('max_shift', 1.15)}",
+        # RAFT 混合模式参数
+        f"raft_mode = {'true' if config.get('acrf', {}).get('raft_mode', False) else 'false'}",
+        f"free_stream_ratio = {config.get('acrf', {}).get('free_stream_ratio', 0.3)}",
+        # L2 调度参数
+        f'l2_schedule_mode = "{config.get("acrf", {}).get("l2_schedule_mode", "constant")}"',
+        f"l2_initial_ratio = {config.get('acrf', {}).get('l2_initial_ratio', 0.3)}",
+        f"l2_final_ratio = {config.get('acrf', {}).get('l2_final_ratio', 0.3)}",
+        f'l2_milestones = "{config.get("acrf", {}).get("l2_milestones", "")}"',
+        f"l2_include_anchor = {'true' if config.get('acrf', {}).get('l2_include_anchor', False) else 'false'}",
+        f"l2_anchor_ratio = {config.get('acrf', {}).get('l2_anchor_ratio', 0.3)}",
+        # Latent Jitter (构图突破)
+        f"latent_jitter_scale = {config.get('acrf', {}).get('latent_jitter_scale', 0.0)}",
         "",
-        "[lora]",
-        f"network_dim = {config.get('network', {}).get('dim', 8)}",
-        f"network_alpha = {config.get('network', {}).get('alpha', 4.0)}",
+    ]
+    
+    # [lora] 部分 - 根据继续训练模式决定输出内容
+    lora_cfg = config.get("lora", {})
+    resume_training = lora_cfg.get("resume_training", False)
+    resume_lora_path = lora_cfg.get("resume_lora_path", "")
+    
+    if resume_training and resume_lora_path:
+        # 继续训练模式：只输出 resume_lora 路径，不输出 rank/层设置
+        toml_lines.extend([
+            "[lora]",
+            f'resume_lora = "{resume_lora_path.replace(chr(92), "/")}"',
+            "# Rank 和层设置将从 LoRA 文件自动读取",
+        ])
+    else:
+        # 新建 LoRA 模式：输出完整设置
+        toml_lines.extend([
+            "[lora]",
+            f"network_dim = {config.get('network', {}).get('dim', 8)}",
+            f"network_alpha = {config.get('network', {}).get('alpha', 4.0)}",
+            f"train_adaln = {'true' if lora_cfg.get('train_adaln', False) else 'false'}",
+            f"train_norm = {'true' if lora_cfg.get('train_norm', False) else 'false'}",
+            f"train_single_stream = {'true' if lora_cfg.get('train_single_stream', False) else 'false'}",
+        ])
+    
+    toml_lines.extend([
         "",
         "[training]",
         f'output_name = "{config.get("training", {}).get("output_name", "zimage-lora")}"',
@@ -465,28 +595,31 @@ def generate_acrf_toml_config(config: Dict[str, Any]) -> str:
         f'lr_scheduler = "{config.get("training", {}).get("lr_scheduler", "constant")}"',
         f"lr_warmup_steps = {config.get('training', {}).get('lr_warmup_steps', 0)}",
         f"lr_num_cycles = {config.get('training', {}).get('lr_num_cycles', 1)}",
-        # Standard 模式参数
-        f"lambda_fft = {config.get('training', {}).get('lambda_fft', 0)}",
-        f"lambda_cosine = {config.get('training', {}).get('lambda_cosine', 0)}",
-        # 损失模式
-        f'loss_mode = "{config.get("training", {}).get("loss_mode", "standard")}"',
-        # 频域感知参数
+        # 基础损失权重
+        f"lambda_l1 = {config.get('training', {}).get('lambda_l1', 1.0)}",
+        f"lambda_cosine = {config.get('training', {}).get('lambda_cosine', 0.1)}",
+        # 频域感知损失 (开关+权重+子参数)
+        f"enable_freq = {'true' if config.get('training', {}).get('enable_freq', False) else 'false'}",
+        f"lambda_freq = {config.get('training', {}).get('lambda_freq', 0.3)}",
         f"alpha_hf = {config.get('training', {}).get('alpha_hf', 1.0)}",
         f"beta_lf = {config.get('training', {}).get('beta_lf', 0.2)}",
-        # 风格结构参数
+        # 风格结构损失 (开关+权重+子参数)
+        f"enable_style = {'true' if config.get('training', {}).get('enable_style', False) else 'false'}",
+        f"lambda_style = {config.get('training', {}).get('lambda_style', 0.3)}",
         f"lambda_struct = {config.get('training', {}).get('lambda_struct', 1.0)}",
         f"lambda_light = {config.get('training', {}).get('lambda_light', 0.5)}",
         f"lambda_color = {config.get('training', {}).get('lambda_color', 0.3)}",
         f"lambda_tex = {config.get('training', {}).get('lambda_tex', 0.5)}",
         f"num_train_epochs = {config.get('advanced', {}).get('num_train_epochs', 10)}",
-        f"save_every_n_epochs = {config.get('advanced', {}).get('save_every_n_epochs', 1)}",
         f"gradient_accumulation_steps = {config.get('advanced', {}).get('gradient_accumulation_steps', 4)}",
         f'mixed_precision = "{config.get("advanced", {}).get("mixed_precision", "bf16")}"',
         f"seed = {config.get('advanced', {}).get('seed', 42)}",
         "",
         "[advanced]",
+        f"save_every_n_epochs = {config.get('advanced', {}).get('save_every_n_epochs', 1)}",
         f"max_grad_norm = {config.get('advanced', {}).get('max_grad_norm', 1.0)}",
         f"gradient_checkpointing = {'true' if config.get('advanced', {}).get('gradient_checkpointing', True) else 'false'}",
+        f"blocks_to_swap = {config.get('advanced', {}).get('blocks_to_swap', 0)}",
         "",
         "[optimization]",
         "auto_optimize = true",
@@ -497,7 +630,7 @@ def generate_acrf_toml_config(config: Dict[str, Any]) -> str:
         f"shuffle = {'true' if dataset_cfg.get('shuffle', True) else 'false'}",
         f"enable_bucket = {'true' if dataset_cfg.get('enable_bucket', True) else 'false'}",
         "",
-    ]
+    ])
     
     # 添加数据集源（带完整配置）
     for ds in datasets:
@@ -511,34 +644,84 @@ def generate_acrf_toml_config(config: Dict[str, Any]) -> str:
                 "",
             ])
     
+    # 正则数据集配置（防止过拟合）
+    reg_dataset = config.get("reg_dataset", {})
+    reg_enabled = reg_dataset.get("enabled", False)
+    reg_datasets = reg_dataset.get("datasets", [])
+    
+    if reg_enabled and reg_datasets:
+        toml_lines.extend([
+            "",
+            "# ============ 正则数据集配置 (Regularization) ============",
+            "[reg_dataset]",
+            "enabled = true",
+            f"weight = {reg_dataset.get('weight', 1.0)}",  # 正则数据权重
+            f"ratio = {reg_dataset.get('ratio', 0.5)}",   # 正则数据占比 (0.5 = 1:1 混合)
+            "",
+        ])
+        
+        for rds in reg_datasets:
+            reg_cache_dir = rds.get("cache_directory", "")
+            if reg_cache_dir:
+                toml_lines.extend([
+                    "[[reg_dataset.sources]]",
+                    f'cache_directory = "{reg_cache_dir.replace(chr(92), "/")}"',
+                    f"num_repeats = {rds.get('num_repeats', 1)}",
+                    "",
+                ])
+    
     return "\n".join(toml_lines)
 
 
 @router.post("/stop")
 async def stop_training():
-    """Stop training process with proper cleanup"""
+    """Stop training process with proper cleanup (Kill Process Tree)"""
     if state.training_process:
         pid = state.training_process.pid
-        state.add_log(f"正在停止训练进程 (PID: {pid})...", "warning")
         
-        # 先尝试优雅终止
-        state.training_process.terminate()
+        # Safety Guard: Never kill self
+        if pid == os.getpid():
+            state.add_log("错误: 试图终止主进程，操作已拦截", "error")
+            return {"status": "error", "message": "Cannot kill main process"}
+            
+        state.add_log(f"正在停止训练进程树 (PID: {pid})...", "warning")
         
-        # 等待进程结束（最多10秒）
+        import psutil
         try:
-            state.training_process.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            # 强制杀死
-            state.training_process.kill()
-            state.training_process.wait(timeout=5)
-            state.add_log("进程被强制终止", "warning")
+            parent = psutil.Process(pid)
+            children = parent.children(recursive=True)
+            for child in children:
+                try:
+                    child.kill()
+                except psutil.NoSuchProcess:
+                    pass
+            parent.kill()
+            
+            # Wait for termination
+            psutil.wait_procs(children + [parent], timeout=5)
+            
+        except psutil.NoSuchProcess:
+            state.add_log("进程已不存在", "warning")
+        except Exception as e:
+            state.add_log(f"停止进程树失败: {str(e)}", "error")
+            # Fallback
+            try:
+                state.training_process.kill()
+            except:
+                pass
         
         state.training_process = None
-        state.add_log("训练已停止，显存将被释放", "warning")
+        state.add_log("训练已停止，进程树已清理", "warning")
         
         # 清理 Python 端的缓存
         import gc
         gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except:
+            pass
         
     return {"status": "stopped"}
 

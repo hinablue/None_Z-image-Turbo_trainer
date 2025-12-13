@@ -34,16 +34,21 @@ ZIMAGE_TARGET_NAMES = [
     "to_k",
     "to_v",
     "to_out",
-    #、 Feed Forward 层 (可选，风格不够强时取消注释)
+    # Feed Forward 层
     "feed_forward",
 ]
 
-# 排除模式 - 这些层绝对不能训练
+# AdaLN 层名称 (可选，通过 train_adaln 参数控制)
+ZIMAGE_ADALN_NAMES = [
+    "adaLN",
+]
+
+# 排除模式 - 这些层默认不训练
 EXCLUDE_PATTERNS = [
     r".*embedder.*",       # Embedding 层 - 会破坏输入空间
     r".*pad_token.*",      # Padding token
     r".*norm.*",           # 所有归一化层 - 易发散
-    r".*adaLN.*",          # AdaLN 调制层 - 归一化相关
+    r".*adaLN.*",          # AdaLN 调制层 - 默认排除
     r".*refiner.*",        # Refiner 模块 - 条件预处理
     r".*final_layer.*",    # 输出层 - 会破坏像素分布
 ]
@@ -179,6 +184,16 @@ class LoRANetwork(nn.Module):
                 lora_module = self.lora_modules[lora_name]
                 # Replace forward method
                 module.forward = lora_module.forward
+    
+    def to(self, *args, **kwargs):
+        """Move LoRA parameters to device and dtype.
+        
+        IMPORTANT: Call this after apply_to() to ensure LoRA params match model dtype.
+        Example: network.to(device='cuda', dtype=torch.bfloat16)
+        """
+        # Move the ModuleDict (which contains all LoRA modules)
+        self.unet_loras = self.unet_loras.to(*args, **kwargs)
+        return self
     
     def prepare_optimizer_params(
         self,
@@ -327,6 +342,7 @@ def create_network(
     text_encoders: Optional[List[nn.Module]] = None,
     unet: Optional[nn.Module] = None,
     neuron_dropout: Optional[float] = None,
+    train_adaln: bool = False,
     **kwargs,
 ) -> LoRANetwork:
     """
@@ -340,6 +356,7 @@ def create_network(
         text_encoders: Text encoders (not used)
         unet: Target model for LoRA
         neuron_dropout: Dropout rate
+        train_adaln: 是否训练 AdaLN 调制层
         
     Returns:
         LoRANetwork instance
@@ -347,11 +364,23 @@ def create_network(
     if unet is None:
         raise ValueError("unet (Z-Image transformer) is required")
     
+    # 动态构建 target_names
+    target_names = list(ZIMAGE_TARGET_NAMES)
+    exclude_patterns = list(EXCLUDE_PATTERNS)
+    
+    if train_adaln:
+        target_names.extend(ZIMAGE_ADALN_NAMES)
+        # 移除 adaLN 排除规则
+        exclude_patterns = [p for p in exclude_patterns if "adaLN" not in p]
+        logger.info("[LoRA] AdaLN 训练已启用")
+    
     return LoRANetwork(
         unet=unet,
         multiplier=multiplier,
         lora_dim=network_dim,
         alpha=network_alpha,
         dropout=neuron_dropout,
+        target_names=target_names,
+        exclude_patterns=exclude_patterns,
         **kwargs,
     )

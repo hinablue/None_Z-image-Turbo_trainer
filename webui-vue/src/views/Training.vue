@@ -64,6 +64,9 @@
       <div class="preview-header">
         <h3>训练配置预览</h3>
         <span class="config-name-badge">{{ currentConfig.name }}</span>
+        <span class="model-type-badge" :class="currentConfig.model_type || 'zimage'">
+          {{ getModelTypeLabel(currentConfig.model_type) }}
+        </span>
         <span class="edit-link" @click="goToEditConfig">
           <el-icon><Edit /></el-icon>
           编辑
@@ -74,6 +77,12 @@
       <div class="preview-section">
         <h4>AC-RF 参数</h4>
         <div class="preview-grid-3">
+          <div class="preview-item">
+            <span class="label">Turbo 模式</span>
+            <span class="value" :class="{ highlight: currentConfig.acrf?.enable_turbo !== false }">
+              {{ currentConfig.acrf?.enable_turbo !== false ? '✓ 开启' : '关闭' }}
+            </span>
+          </div>
           <div class="preview-item">
             <span class="label">Turbo Steps</span>
             <span class="value">{{ currentConfig.acrf?.turbo_steps ?? 10 }}</span>
@@ -93,6 +102,10 @@
           <div class="preview-item">
             <span class="label">SNR Floor</span>
             <span class="value">{{ currentConfig.acrf?.snr_floor ?? 0.1 }}</span>
+          </div>
+          <div class="preview-item" v-if="currentConfig.acrf?.latent_jitter_scale > 0">
+            <span class="label">Latent Jitter</span>
+            <span class="value">{{ currentConfig.acrf?.latent_jitter_scale }}</span>
           </div>
         </div>
       </div>
@@ -149,20 +162,36 @@
             <span class="value">{{ currentConfig.training?.lr_warmup_steps ?? 0 }}</span>
           </div>
           <div class="preview-item">
-            <span class="label">Lambda FFT</span>
-            <span class="value">{{ currentConfig.training?.lambda_fft ?? 0 }}</span>
+            <span class="label">Lambda L1</span>
+            <span class="value">{{ currentConfig.training?.lambda_l1 ?? 1.0 }}</span>
           </div>
           <div class="preview-item">
             <span class="label">Lambda Cosine</span>
-            <span class="value">{{ currentConfig.training?.lambda_cosine ?? 0 }}</span>
+            <span class="value">{{ currentConfig.training?.lambda_cosine ?? 0.1 }}</span>
+          </div>
+          <div class="preview-item" v-if="currentConfig.training?.enable_freq">
+            <span class="label">Lambda Freq</span>
+            <span class="value">{{ currentConfig.training?.lambda_freq ?? 0.3 }}</span>
+          </div>
+          <div class="preview-item" v-if="currentConfig.training?.enable_style">
+            <span class="label">Lambda Style</span>
+            <span class="value">{{ currentConfig.training?.lambda_style ?? 0.3 }}</span>
+          </div>
+          <div class="preview-item" v-if="currentConfig.acrf?.raft_mode">
+            <span class="label">L2 调度</span>
+            <span class="value highlight">{{ getL2ScheduleLabel() }}</span>
           </div>
           <div class="preview-item">
-            <span class="label">损失模式</span>
-            <span class="value highlight">{{ getLossModeLabel(currentConfig.training?.loss_mode) }}</span>
+            <span class="label">损失组合</span>
+            <span class="value highlight">{{ getEnabledLossLabel(currentConfig.training, currentConfig.acrf) }}</span>
+          </div>
+          <div class="preview-item" v-if="currentConfig.lora?.train_adaln || currentConfig.lora?.train_norm || currentConfig.lora?.train_single_stream">
+            <span class="label">LoRA 高级</span>
+            <span class="value highlight">{{ getLoraAdvancedLabel() }}</span>
           </div>
         </div>
-        <!-- 频域感知参数 -->
-        <div class="preview-grid-3" v-if="['frequency', 'unified'].includes(currentConfig.training?.loss_mode)">
+        <!-- 频域感知损失参数 -->
+        <div class="preview-grid-3" v-if="currentConfig.training?.enable_freq">
           <div class="preview-item">
             <span class="label">Alpha HF (高频)</span>
             <span class="value">{{ currentConfig.training?.alpha_hf ?? 1.0 }}</span>
@@ -171,13 +200,9 @@
             <span class="label">Beta LF (低频)</span>
             <span class="value">{{ currentConfig.training?.beta_lf ?? 0.2 }}</span>
           </div>
-          <div class="preview-item">
-            <span class="label">Downsample Factor</span>
-            <span class="value">{{ currentConfig.training?.downsample_factor ?? 4 }}</span>
-          </div>
         </div>
-        <!-- 风格结构参数 -->
-        <div class="preview-grid-3" v-if="['style', 'unified'].includes(currentConfig.training?.loss_mode)">
+        <!-- 风格结构损失参数 -->
+        <div class="preview-grid-3" v-if="currentConfig.training?.enable_style">
           <div class="preview-item">
             <span class="label">λ Struct (结构)</span>
             <span class="value">{{ currentConfig.training?.lambda_struct ?? 1.0 }}</span>
@@ -246,8 +271,16 @@
             <span class="value">{{ currentConfig.advanced?.gradient_checkpointing ? '是' : '否' }}</span>
           </div>
           <div class="preview-item">
+            <span class="label">Blocks to Swap</span>
+            <span class="value">{{ currentConfig.advanced?.blocks_to_swap ?? 0 }}</span>
+          </div>
+          <div class="preview-item">
             <span class="label">随机种子</span>
             <span class="value">{{ currentConfig.advanced?.seed ?? 42 }}</span>
+          </div>
+          <div class="preview-item" v-if="currentConfig.advanced?.num_gpus > 1 || currentConfig.advanced?.gpu_ids">
+            <span class="label">GPU 配置</span>
+            <span class="value highlight">{{ getGpuConfigLabel() }}</span>
           </div>
         </div>
       </div>
@@ -378,14 +411,73 @@ function getDatasetName(path: string): string {
   return parts[parts.length - 1] || parts[parts.length - 2] || path
 }
 
-function getLossModeLabel(mode: string | undefined): string {
+function getModelTypeLabel(type: string | undefined): string {
   const labels: Record<string, string> = {
-    'standard': 'Standard (基础)',
-    'frequency': 'Frequency (频域感知)',
-    'style': 'Style (风格结构)',
-    'unified': 'Unified (统一模式)'
+    'zimage': '⚡ Z-Image',
+    'longcat': '🐱 LongCat'
   }
-  return labels[mode || 'standard'] || 'Standard (基础)'
+  return labels[type || 'zimage'] || '⚡ Z-Image'
+}
+
+function getEnabledLossLabel(training: any, acrf?: any): string {
+  if (!training) return 'L1 + Cosine'
+  const parts = ['L1']
+  if (training.lambda_cosine > 0) parts.push('Cosine')
+  if (training.enable_freq) parts.push('Freq')
+  if (training.enable_style) parts.push('Style')
+  if (acrf?.raft_mode) parts.push('L2')
+  return parts.join(' + ')
+}
+
+function getL2ScheduleLabel(): string {
+  const acrf = currentConfig.value?.acrf
+  if (!acrf?.raft_mode) return '未启用'
+  
+  const mode = acrf.l2_schedule_mode || 'constant'
+  const initial = acrf.l2_initial_ratio ?? 0.3
+  const final = acrf.l2_final_ratio ?? initial
+  
+  const modeLabels: Record<string, string> = {
+    'constant': `固定 ${(initial * 100).toFixed(0)}%`,
+    'linear_increase': `${(initial * 100).toFixed(0)}% → ${(final * 100).toFixed(0)}%`,
+    'linear_decrease': `${(initial * 100).toFixed(0)}% → ${(final * 100).toFixed(0)}%`,
+    'step': `阶梯 ${(initial * 100).toFixed(0)}%→${(final * 100).toFixed(0)}%`
+  }
+  
+  let label = modeLabels[mode] || `${(initial * 100).toFixed(0)}%`
+  
+  if (acrf.l2_include_anchor) {
+    const anchorRatio = acrf.l2_anchor_ratio ?? 0.3
+    label += ` (+锚点 ${(anchorRatio * 100).toFixed(0)}%)`
+  }
+  
+  return label
+}
+
+function getLoraAdvancedLabel(): string {
+  const lora = currentConfig.value?.lora || {}
+  const parts: string[] = []
+  
+  if (lora.train_adaln) parts.push('AdaLN')
+  if (lora.train_norm) parts.push('Norm')
+  if (lora.train_single_stream) parts.push('单流')
+  
+  return parts.length > 0 ? `+${parts.join('+')}` : ''
+}
+
+function getGpuConfigLabel(): string {
+  const advanced = currentConfig.value?.advanced || {}
+  const numGpus = advanced.num_gpus || 1
+  const gpuIds = advanced.gpu_ids || ''
+  
+  if (numGpus > 1 && gpuIds) {
+    return `${numGpus} GPUs (${gpuIds})`
+  } else if (numGpus > 1) {
+    return `${numGpus} GPUs`
+  } else if (gpuIds) {
+    return `GPU ${gpuIds}`
+  }
+  return '单卡'
 }
 
 function formatTime(seconds: number): string {
@@ -503,12 +595,17 @@ async function generateCacheAndStartTraining() {
       const vaePath = defaultsRes.data.vaePath
       const textEncoderPath = defaultsRes.data.textEncoderPath
       
+      // 获取当前配置的模型类型（关键：确保生成正确类型的缓存）
+      const modelType = currentConfig.value.model_type || 'zimage'
+      addLog(`模型类型: ${modelType}`, 'info')
+      
       await axios.post('/api/cache/generate', {
         datasetPath: datasetPath,
         generateLatent: true,
         generateText: true,
         vaePath: vaePath,
         textEncoderPath: textEncoderPath,
+        modelType: modelType,  // 传递模型类型，避免缓存类型错误
         resolution: ds.resolution_limit || 1024,
         batchSize: 1
       })
@@ -852,6 +949,23 @@ onUnmounted(() => {
       border-radius: var(--radius-sm);
       font-size: 0.8rem;
       font-weight: 600;
+    }
+    
+    .model-type-badge {
+      padding: 2px 10px;
+      border-radius: var(--radius-sm);
+      font-size: 0.8rem;
+      font-weight: 600;
+      
+      &.zimage {
+        background: linear-gradient(135deg, #667eea, #764ba2);
+        color: white;
+      }
+      
+      &.longcat {
+        background: linear-gradient(135deg, #f093fb, #f5576c);
+        color: white;
+      }
     }
     
     .edit-link {

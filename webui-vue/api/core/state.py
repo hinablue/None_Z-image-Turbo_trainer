@@ -56,11 +56,37 @@ cache_text_process: Optional[subprocess.Popen] = None
 
 training_websockets: List[WebSocket] = []
 
-# Generation pipeline
-pipeline: Any = None
+# Generation pipeline (支持多模型)
+pipelines: Dict[str, Any] = {}  # {model_type: pipeline}
+pipeline: Any = None  # 保持向后兼容，指向当前活跃的 pipeline
 
-# 当前加载的 LoRA 路径（用于智能缓存）
-current_lora_path: Optional[str] = None
+# 当前加载的模型类型
+current_model_type: Optional[str] = None
+
+# 当前加载的 LoRA 路径（用于智能缓存，每个模型独立）
+lora_cache: Dict[str, Optional[str]] = {}  # {model_type: lora_path}
+current_lora_path: Optional[str] = None  # 向后兼容
+
+def get_pipeline(model_type: str) -> Any:
+    """获取指定模型的 pipeline"""
+    return pipelines.get(model_type)
+
+def set_pipeline(model_type: str, pipe: Any):
+    """设置指定模型的 pipeline"""
+    global pipeline, current_model_type
+    pipelines[model_type] = pipe
+    pipeline = pipe  # 向后兼容
+    current_model_type = model_type
+
+def get_lora_path(model_type: str) -> Optional[str]:
+    """获取指定模型当前加载的 LoRA 路径"""
+    return lora_cache.get(model_type)
+
+def set_lora_path(model_type: str, path: Optional[str]):
+    """设置指定模型的 LoRA 路径"""
+    global current_lora_path
+    lora_cache[model_type] = path
+    current_lora_path = path  # 向后兼容
 
 # Generation state
 generation_status: Dict[str, Any] = {
@@ -93,6 +119,35 @@ cache_progress: Dict[str, Any] = {
     "latent": {"current": 0, "total": 0, "progress": 0},
     "text": {"current": 0, "total": 0, "progress": 0}
 }
+
+# Download progress state (用于总进度显示)
+download_progress: Dict[str, Any] = {
+    "progress": 0,
+    "downloaded_gb": 0,
+    "total_gb": 32,  # 默认预估
+    "speed": 0,
+    "speed_unit": "MB",
+    "model_type": "",  # 正在下载的模型类型
+    "model_name": ""   # 正在下载的模型名称
+}
+
+def update_download_progress(**kwargs):
+    """更新下载进度"""
+    download_progress.update(kwargs)
+
+def reset_download_progress():
+    """重置下载进度"""
+    download_progress["progress"] = 0
+    download_progress["downloaded_gb"] = 0
+    download_progress["total_gb"] = 32
+    download_progress["speed"] = 0
+    download_progress["speed_unit"] = "MB"
+    download_progress["model_type"] = ""
+    download_progress["model_name"] = ""
+
+def get_download_progress() -> Dict[str, Any]:
+    """获取下载进度"""
+    return download_progress.copy()
 
 def update_cache_progress(cache_type: str, **kwargs):
     """更新缓存进度"""

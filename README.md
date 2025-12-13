@@ -4,9 +4,13 @@
 
 ![Logo](https://img.shields.io/badge/None-Trainer-f0b429?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMxYTFhMWQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJtMTIgMyA4IDR2NmMwIDUuNTMtMy42MSA4Ljk5LTggMTEtNC4zOS0yLjAxLTgtNS40Ny04LTExVjdsMTItNFoiLz48L3N2Zz4=)
 
-**Z-Image Turbo LoRA 训练工作室**
+**None LoRA 训练工作室**
 
 基于 **AC-RF（锚点耦合整流流）** 算法的高效 LoRA 微调工具
+
+支持多模型：**Z-Image Turbo** | **LongCat-Image**
+
+[English README](README_EN.md)
 
 </div>
 
@@ -24,6 +28,7 @@
 | 🖥️ **现代化 WebUI** | Vue.js + FastAPI 全栈界面 |
 | 📊 **实时监控** | Loss 曲线、进度、显存监控 |
 | 🏷️ **Ollama 标注** | 一键 AI 图片打标 |
+| 🔄 **多模型支持** | Z-Image / LongCat-Image 一键切换 |
 
 ---
 
@@ -135,6 +140,14 @@ start.bat
 <details>
 <summary>如果一键部署遇到问题，可展开手动安装</summary>
 
+### ⚠️ 前置要求
+
+- **Python** 3.10+
+- **Node.js** 18+ (用于构建前端)
+- **npm** 或 **pnpm**
+
+### 安装步骤
+
 ```bash
 # 1. 安装 Python 依赖
 pip install -r requirements.txt
@@ -145,12 +158,21 @@ pip install git+https://github.com/huggingface/diffusers.git
 # 3. 安装本项目
 pip install -e .
 
-# 4. 创建配置文件
+# 4. 构建前端（重要！）
+cd webui-vue
+npm install          # 或 pnpm install
+npm run build        # 生成 dist 目录
+cd ..
+
+# 5. 创建配置文件
 cp env.example .env
 
-# 5. 启动服务
+# 6. 启动服务
 cd webui-vue/api && python main.py --port 9198
 ```
+
+> **💡 提示**: 如果 `npm run build` 失败，请确保 Node.js 版本 >= 18。
+> 可使用 `node -v` 检查版本。
 
 </details>
 
@@ -171,36 +193,42 @@ python -m zimage_trainer.cache_latents \
 
 # 生成 Text 缓存（文本编码）
 python -m zimage_trainer.cache_text_encoder \
-    --model_path ./zimage_models \
-    --dataset_path ./datasets/your_dataset \
-    --output_dir ./datasets/your_dataset
+    --text_encoder ./zimage_models/text_encoder \
+    --input_dir ./datasets/your_dataset \
+    --output_dir ./datasets/your_dataset \
+    --max_length 512  # 可选: 256/512/1024, 默认 512
 ```
 
 ### 启动训练
 
+首先复制示例配置并修改路径：
+
 ```bash
-# 使用配置文件训练（推荐）
-python scripts/train_acrf.py --config config/acrf_config.toml
+# Z-Image 训练
+cp config/acrf_config.toml config/my_zimage_config.toml
+# 编辑 my_zimage_config.toml，修改 [model].dit 和 [[dataset.sources]].cache_directory
 
-# 指定损失模式
-python scripts/train_acrf.py --config config/acrf_config.toml --loss_mode frequency
-
-# 频域感知模式 + 自定义参数
-python scripts/train_acrf.py --config config/acrf_config.toml \
-    --loss_mode frequency \
-    --alpha_hf 1.0 \
-    --beta_lf 0.2
-
-# 风格结构模式
-python scripts/train_acrf.py --config config/acrf_config.toml \
-    --loss_mode style \
-    --lambda_struct 1.0 \
-    --lambda_light 0.5 \
-    --lambda_color 0.3
-
-# 统一模式（频域 + 风格）
-python scripts/train_acrf.py --config config/acrf_config.toml --loss_mode unified
+# LongCat-Image 训练
+cp config/longcat_turbo_config.toml config/my_longcat_config.toml
+# 编辑 my_longcat_config.toml，修改 [model].dit 和 [[dataset.sources]].cache_directory
 ```
+
+然后启动训练：
+
+```bash
+# Z-Image 训练（推荐使用 accelerate）
+python -m accelerate.commands.launch --mixed_precision bf16 \
+    scripts/train_zimage_v2.py --config config/my_zimage_config.toml
+
+# LongCat-Image 训练
+python -m accelerate.commands.launch --mixed_precision bf16 \
+    scripts/train_longcat.py --config config/my_longcat_config.toml
+```
+
+> **⚠️ 重要**: 配置文件中必须修改以下路径：
+> - `[model].dit` - Transformer 模型路径
+> - `[model].output_dir` - 输出目录
+> - `[[dataset.sources]].cache_directory` - 数据集缓存路径
 
 ### 推理生成
 
@@ -277,6 +305,11 @@ learning_rate = 1e-4    # 学习率
 num_train_epochs = 10   # 训练轮数
 snr_gamma = 5.0         # Min-SNR 加权
 loss_mode = "standard"  # 损失模式（见下方说明）
+
+[dataset]
+batch_size = 1
+enable_bucket = true
+max_sequence_length = 512  # 文本序列长度 (需与缓存一致)
 ```
 
 ### 🎨 损失模式 (Loss Mode)

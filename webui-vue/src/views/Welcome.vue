@@ -121,17 +121,30 @@
         </div>
       </div>
 
-      <!-- 模型状态 -->
+      <!-- 模型状态（使用抽象层接口） -->
       <div class="status-card model-card">
         <div class="card-header">
           <el-icon><Box /></el-icon>
           <span>基础模型</span>
-          <el-tag :type="modelStatus.exists ? 'success' : 'warning'" size="small" effect="dark">
-            {{ modelStatus.exists ? '就绪' : '需下载' }}
+          <el-tag :type="currentModelStatus.exists ? 'success' : 'warning'" size="small" effect="dark">
+            {{ currentModelStatus.exists ? '就绪' : '需下载' }}
           </el-tag>
         </div>
+
+        <!-- 模型类型选择 -->
+        <div class="model-selector">
+          <div 
+            v-for="model in modelTypes" 
+            :key="model.value"
+            :class="['model-type-btn', { active: selectedModelType === model.value }]"
+            @click="selectModelType(model.value)"
+          >
+            <span class="model-icon">{{ model.icon }}</span>
+            <span class="model-label">{{ model.label }}</span>
+          </div>
+        </div>
         
-        <div class="model-status" v-if="modelStatus.summary">
+        <div class="model-status" v-if="currentModelStatus.summary">
           <div class="model-ring">
             <svg viewBox="0 0 100 100">
               <circle class="ring-bg" cx="50" cy="50" r="42" />
@@ -146,18 +159,18 @@
           <div class="model-details">
             <div class="detail-row">
               <span>有效组件</span>
-              <strong class="success">{{ modelStatus.summary.valid_components }}</strong>
+              <strong class="success">{{ currentModelStatus.summary.valid_components }}</strong>
             </div>
             <div class="detail-row">
               <span>总组件</span>
-              <strong>{{ modelStatus.summary.total_components }}</strong>
+              <strong>{{ currentModelStatus.summary.total_components }}</strong>
             </div>
           </div>
         </div>
 
-        <div class="component-grid" v-if="modelStatus.details">
+        <div class="component-grid" v-if="currentModelStatus.details">
           <div 
-            v-for="(comp, name) in modelStatus.details" 
+            v-for="(comp, name) in currentModelStatus.details" 
             :key="name"
             class="comp-item"
             :class="{ valid: comp.valid, missing: !comp.exists }"
@@ -170,20 +183,55 @@
           </div>
         </div>
 
+        <!-- 模型路径显示 -->
+        <div class="model-path-info" v-if="currentModelStatus.path">
+          <span class="path-label">配置路径:</span>
+          <code class="path-value" :title="currentModelStatus.path">{{ currentModelStatus.path }}</code>
+        </div>
+
+        <!-- 未检测状态 -->
+        <div v-if="!currentModelStatus.summary && !loadingModel" class="model-unchecked">
+          <el-icon><WarningFilled /></el-icon>
+          <span>未检测到模型，请配置 .env 中的模型路径</span>
+        </div>
+
+        <div v-if="loadingModel" class="loading-state">
+          <el-icon class="is-loading"><Loading /></el-icon>
+          <span>检测中...</span>
+        </div>
+
+        <!-- 下载按钮：完全缺失或部分缺失时显示（且没有下载进行中） -->
         <el-button 
-          v-if="!modelStatus.exists && !isDownloading" 
+          v-if="needsDownload && !isDownloading" 
           type="primary" 
           @click="startDownload" 
           :loading="startingDownload"
           class="download-btn"
         >
           <el-icon><Download /></el-icon>
-          下载 Z-Image-Turbo 模型
+          {{ downloadButtonText }}
         </el-button>
         
-        <div v-if="isDownloading" class="download-progress">
-          <el-progress :percentage="downloadProgress" :stroke-width="8" />
-          <span class="download-info">{{ downloadSizeText }}</span>
+        <!-- 下载进度（总进度）：始终显示，用模型名称区分 -->
+        <div v-if="isDownloading || isDownloadCompleted" class="download-progress-box">
+          <div class="progress-header">
+            <span>{{ isDownloadCompleted ? '下载完成' : `正在下载 ${downloadingModelName || currentModelName}` }}</span>
+            <span class="progress-percent">{{ isDownloadCompleted ? 100 : downloadProgress.toFixed(1) }}%</span>
+          </div>
+          <el-progress 
+            :percentage="isDownloadCompleted ? 100 : downloadProgress" 
+            :stroke-width="10"
+            :show-text="false"
+            status="success"
+          />
+          <div class="progress-info" v-if="!isDownloadCompleted">
+            <span>{{ downloadedSize }} / {{ totalSize }}</span>
+            <span>{{ downloadSpeed }}</span>
+          </div>
+          <div class="progress-info" v-else>
+             <span>已完成</span>
+             <el-button link type="primary" @click="systemStore.updateDownloadStatus({ status: 'idle' })">关闭</el-button>
+          </div>
         </div>
       </div>
 
@@ -205,38 +253,115 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
+import { useRouter } from 'vue-router'
 import { useSystemStore } from '@/stores/system'
 import { useWebSocketStore } from '@/stores/websocket'
 import { 
   Picture, Setting, VideoPlay, Monitor,
   CircleCheck, Close, Loading, Box,
-  ArrowRight, MagicStick, Download, CopyDocument
+  ArrowRight, MagicStick, Download, CopyDocument, WarningFilled
 } from '@element-plus/icons-vue'
 import axios from 'axios'
 import { ElMessage } from 'element-plus'
 
+const router = useRouter()
 const systemStore = useSystemStore()
 const wsStore = useWebSocketStore()
 
-const modelStatus = ref({ exists: false, details: null as any, summary: null as any })
+// 多模型支持
+const modelTypes = ref([
+  { value: 'zimage', label: 'Z-Image', icon: '⚡' },
+  { value: 'longcat', label: 'LongCat', icon: '🐱' }
+])
+
+const selectedModelType = ref('zimage')
+const loadingModel = ref(false)
+
+// 每个模型的状态
+const modelStatusMap = ref<Record<string, any>>({
+  zimage: { exists: false, details: null, summary: null, path: '' },
+  longcat: { exists: false, details: null, summary: null, path: '' }
+})
+
+const currentModelStatus = computed(() => modelStatusMap.value[selectedModelType.value] || { exists: false, details: null, summary: null })
+
+const currentModelName = computed(() => {
+  const names: Record<string, string> = {
+    'zimage': 'Z-Image-Turbo',
+    'longcat': 'LongCat-Image'
+  }
+  return names[selectedModelType.value] || selectedModelType.value
+})
+
 const startingDownload = ref(false)
+
+
+
+// 从后端状态获取正在下载的模型信息
+const downloadingModelName = computed(() => downloadStatus.value.model_name || '')
+const downloadingModelType = computed(() => downloadStatus.value.model_type || '')
 
 const systemInfo = computed(() => systemStore.systemInfo)
 const wsConnected = computed(() => wsStore.isConnected)
 const hasSystemInfo = computed(() => systemStore.systemInfo.python !== '')
 
+// 下载状态
 const downloadStatus = computed(() => systemStore.downloadStatus)
 const isDownloading = computed(() => downloadStatus.value.status === 'running')
-const downloadProgress = computed(() => downloadStatus.value.progress)
-const downloadSizeText = computed(() => {
+const isDownloadCompleted = computed(() => downloadStatus.value.status === 'completed')
+const downloadProgress = computed(() => downloadStatus.value.progress || 0)
+const downloadedSize = computed(() => {
   const gb = downloadStatus.value.downloaded_size_gb || 0
-  return gb > 0 ? `已下载 ${gb.toFixed(2)} GB` : '准备下载...'
+  return gb >= 1 ? `${gb.toFixed(2)} GB` : `${(gb * 1024).toFixed(0)} MB`
+})
+const totalSize = computed(() => {
+  const gb = downloadStatus.value.total_size_gb || 32  // 默认预估 32GB
+  return `${gb.toFixed(0)} GB`
+})
+const downloadSpeed = computed(() => {
+  const speed = downloadStatus.value.speed || 0
+  const unit = downloadStatus.value.speed_unit || 'MB'
+  return speed > 0 ? `${speed.toFixed(1)} ${unit}/s` : '计算中...'
 })
 
+// 监听下载状态变化
+watch(() => downloadStatus.value.status, (newStatus, oldStatus) => {
+  if (newStatus === 'completed' && oldStatus === 'running') {
+    ElMessage.success('下载完成！正在刷新模型状态...')
+    refreshModelStatus()
+  }
+})
+
+// 是否需要下载（完全缺失或部分缺失）
+const needsDownload = computed(() => {
+  const status = currentModelStatus.value
+  if (!status.summary) return !status.exists
+  
+  // 有缺失的组件就需要下载
+  const { valid_components, total_components } = status.summary
+  return valid_components < total_components
+})
+
+// 下载按钮文字
+const downloadButtonText = computed(() => {
+  const status = currentModelStatus.value
+  if (!status.summary || !status.exists) {
+    return `下载 ${currentModelName.value} 模型`
+  }
+  
+  const { missing_components } = status.summary
+  if (missing_components && missing_components.length > 0) {
+    return `补充下载 (${missing_components.length} 个组件缺失)`
+  }
+  
+  return `下载 ${currentModelName.value} 模型`
+})
+
+
 const validPercent = computed(() => {
-  if (!modelStatus.value.summary) return 0
-  const { valid_components, total_components } = modelStatus.value.summary
+  if (!currentModelStatus.value.summary) return 0
+  const { valid_components, total_components } = currentModelStatus.value.summary
   return Math.round((valid_components / total_components) * 100)
 })
 
@@ -254,24 +379,45 @@ const componentNames: Record<string, string> = {
   'model_index.json': 'Model Index'
 }
 
-function getComponentName(name: string): string {
-  return componentNames[name] || name
+function getComponentName(name: string | number): string {
+  const key = String(name)
+  return componentNames[key] || key
 }
 
-async function refreshModelStatus() {
+async function selectModelType(type: string) {
+  selectedModelType.value = type
+  await refreshModelStatus(type)
+}
+
+async function refreshModelStatus(modelType?: string) {
+  const type = modelType || selectedModelType.value
+  loadingModel.value = true
   try {
-    const res = await axios.get('/api/system/model-status')
-    modelStatus.value = res.data
+    // 使用抽象层接口检测模型状态
+    const res = await axios.get(`/api/system/model-detector/detect/${type}`)
+    if (res.data.success) {
+      modelStatusMap.value[type] = {
+        exists: res.data.status === 'valid' || res.data.status === 'incomplete',
+        details: res.data.components,
+        summary: res.data.summary,
+        path: res.data.path
+      }
+    } else {
+      modelStatusMap.value[type] = { exists: false, details: null, summary: null, path: '' }
+    }
   } catch (e) {
     console.error('Failed to check model status:', e)
+    modelStatusMap.value[type] = { exists: false, details: null, summary: null, path: '' }
+  } finally {
+    loadingModel.value = false
   }
 }
 
 async function startDownload() {
   startingDownload.value = true
   try {
-    await axios.post('/api/system/download-model')
-    ElMessage.success('下载任务已启动')
+    const res = await axios.post(`/api/system/download-model?model_type=${selectedModelType.value}`)
+    ElMessage.success(`${currentModelName.value} 下载任务已启动`)
   } catch (e: any) {
     ElMessage.error('启动下载失败: ' + (e.response?.data?.detail || e.message))
   } finally {
@@ -728,6 +874,86 @@ refreshModelStatus()
   flex: 1;
 }
 
+.model-selector {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.model-type-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 16px;
+  background: var(--bg-darker);
+  border: 2px solid transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.model-type-btn:hover {
+  border-color: var(--primary);
+  background: rgba(240, 180, 41, 0.05);
+}
+
+.model-type-btn.active {
+  border-color: var(--primary);
+  background: rgba(240, 180, 41, 0.1);
+}
+
+.model-type-btn .model-icon {
+  font-size: 18px;
+}
+
+.model-type-btn .model-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.model-path-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-lighter);
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.model-path-info .path-label {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.model-path-info .path-value {
+  color: var(--text-primary);
+  font-family: 'Consolas', 'Monaco', monospace;
+  background: transparent;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-unchecked {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.model-unchecked .el-icon {
+  font-size: 18px;
+  color: var(--warning);
+}
+
 .model-status {
   display: flex;
   align-items: center;
@@ -840,14 +1066,30 @@ refreshModelStatus()
   width: 100%;
 }
 
-.download-progress {
-  text-align: center;
+.download-progress-box {
+  padding: 12px;
+  background: var(--bg-lighter);
+  border-radius: 8px;
 }
 
-.download-info {
-  display: block;
-  margin-top: 8px;
+.download-progress-box .progress-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
   font-size: 13px;
+}
+
+.download-progress-box .progress-percent {
+  font-weight: 600;
+  color: var(--success);
+}
+
+.download-progress-box .progress-info {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 12px;
   color: var(--text-muted);
 }
 
@@ -926,3 +1168,6 @@ refreshModelStatus()
   }
 }
 </style>
+
+
+
