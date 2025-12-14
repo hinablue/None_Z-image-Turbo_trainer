@@ -595,8 +595,9 @@ def main():
                 
                 # SNR weighting
                 snr_weights = compute_snr_weights(
-                    timesteps / 1000.0,
-                    gamma=args.snr_gamma,
+                    timesteps,
+                    num_train_timesteps=1000,
+                    snr_gamma=args.snr_gamma,
                     snr_floor=args.snr_floor
                 )
                 anchor_loss_weighted = loss * snr_weights.mean()
