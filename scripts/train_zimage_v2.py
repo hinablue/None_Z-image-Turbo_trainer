@@ -281,32 +281,29 @@ def main():
     if args.seed is not None:
         set_seed(args.seed)
     
-    logger.info("=" * 60)
-    logger.info("[START] Z-Image AC-RF Training")
-    logger.info("=" * 60)
-    logger.info(f"Output: {args.output_dir}")
-    logger.info(f"Turbo mode: {args.enable_turbo} (steps={args.turbo_steps})")
-    logger.info(f"LoRA rank: {args.network_dim}")
-    
     # Determine weight dtype
     weight_dtype = torch.float32
     if accelerator.mixed_precision == "fp16":
         weight_dtype = torch.float16
     elif accelerator.mixed_precision == "bf16":
         weight_dtype = torch.bfloat16
-    logger.info(f"Weight dtype: {weight_dtype}")
     
-    # =========================================================================
-    # 1. Load Transformer (LOCAL VERSION with use_reentrant=False)
-    # =========================================================================
-    logger.info("\n[LOAD] Loading Transformer...")
+    logger.info("\n" + "=" * 60)
+    logger.info("🚀 Z-Image AC-RF Training")
+    logger.info("=" * 60)
+    logger.info(f"📁 Output: {args.output_dir}/{args.output_name}")
+    logger.info(f"🎯 Mode: {'Turbo (' + str(args.turbo_steps) + ' steps)' if args.enable_turbo else 'Standard Flow Matching'}")
+    logger.info(f"🧠 LoRA: rank={args.network_dim}, alpha={args.network_alpha}")
+    logger.info(f"⚡ Precision: {weight_dtype}")
+    
+    logger.info("\n[1/7] 加载 Transformer...")
     
     try:
         from zimage_trainer.models.transformer_z_image import ZImageTransformer2DModel
-        logger.info("  [LOCAL] Using modified ZImageTransformer2DModel (use_reentrant=False)")
+        logger.info("  ✓ 使用本地 ZImageTransformer2DModel")
     except ImportError:
         from diffusers import ZImageTransformer2DModel
-        logger.warning("  [FALLBACK] Using diffusers ZImageTransformer2DModel")
+        logger.warning("  ⚠ 使用 diffusers 默认版本")
     
     transformer = ZImageTransformer2DModel.from_pretrained(
         args.dit,
@@ -356,7 +353,7 @@ def main():
         else:
             logger.warning("  [RESUME] 无法推断 rank，使用默认值")
     
-    logger.info(f"\n[SETUP] Creating LoRA (rank={args.network_dim})...")
+    logger.info("\n[2/7] 创建 LoRA (rank={args.network_dim})...")
     
     # 动态构建 target_names 和 exclude_patterns
     target_names = list(ZIMAGE_TARGET_NAMES)
@@ -390,11 +387,9 @@ def main():
     
     # CRITICAL: Convert LoRA params to same dtype as model (BF16)
     network.to(accelerator.device, dtype=weight_dtype)
-    logger.info(f"  [DTYPE] LoRA params converted to {weight_dtype}")
     
     # Freeze base model (LoRA params remain trainable)
     transformer.requires_grad_(False)
-    logger.info("  [FREEZE] Base model frozen (LoRA trainable)")
     
     # Get only LoRA trainable params
     trainable_params = []
@@ -402,12 +397,12 @@ def main():
         trainable_params.extend(lora_module.get_trainable_params())
     
     param_count = sum(p.numel() for p in trainable_params)
-    logger.info(f"  Trainable parameters: {param_count:,} ({param_count/1e6:.2f}M)")
+    logger.info(f"  ✓ 参数量: {param_count:,} ({param_count/1e6:.2f}M)")
     
     # =========================================================================
     # 4. AC-RF Trainer
     # =========================================================================
-    logger.info("\n[INIT] Initializing AC-RF Trainer...")
+    logger.info("\n[3/7] 初始化 AC-RF Trainer...")
     acrf_trainer = ACRFTrainer(
         num_train_timesteps=1000,
         turbo_steps=args.turbo_steps,
@@ -418,8 +413,10 @@ def main():
     # =========================================================================
     # 5. Loss Functions
     # =========================================================================
-    logger.info("\n[LOSS] Configuring loss functions...")
-    logger.info(f"  [Basic] lambda_l1={args.lambda_l1}, lambda_cosine={args.lambda_cosine}")
+    logger.info("\n[4/7] 配置 Loss 函数...")
+    
+    # 基础 Loss
+    loss_info = f"L1×{args.lambda_l1} + Cos×{args.lambda_cosine}"
     
     freq_loss_fn = None
     if args.enable_freq:
@@ -427,7 +424,7 @@ def main():
             alpha_hf=args.alpha_hf,
             beta_lf=args.beta_lf,
         )
-        logger.info(f"  [Freq] Enabled lambda={args.lambda_freq}, alpha_hf={args.alpha_hf}")
+        loss_info += f" + Freq×{args.lambda_freq}"
     
     style_loss_fn = None
     if args.enable_style:
@@ -437,32 +434,30 @@ def main():
             lambda_color=args.lambda_color,
             lambda_tex=args.lambda_tex,
         )
-        logger.info(f"  [Style] Enabled lambda={args.lambda_style}, struct={args.lambda_struct}, light={args.lambda_light}, color={args.lambda_color}, tex={args.lambda_tex}")
+        loss_info += f" + Style×{args.lambda_style}"
     
     # RAFT L2 混合模式
-    # 确保 raft_mode 是布尔值 (TOML 可能返回字符串)
     if isinstance(args.raft_mode, str):
         args.raft_mode = args.raft_mode.lower() in ('true', '1', 'yes')
     args.raft_mode = bool(args.raft_mode)
     
-    logger.info(f"  [RAFT] raft_mode={args.raft_mode} (type={type(args.raft_mode).__name__}), free_stream_ratio={args.free_stream_ratio}")
     if args.raft_mode:
-        logger.info(f"  [RAFT] L2 混合模式 Enabled, free_stream_ratio={args.free_stream_ratio}")
-    else:
-        logger.info(f"  [RAFT] L2 混合模式 Disabled")
+        loss_info += f" + L2×{args.free_stream_ratio}"
+    
+    logger.info(f"  📊 Loss 组合: {loss_info}")
     
     # 时间步感知 Loss 权重调度器
     timestep_aware_scheduler = create_timestep_aware_scheduler_from_args(args)
     if timestep_aware_scheduler:
-        logger.info(f"  [TimestepAware] Enabled (high>{args.timestep_high_threshold}, low<{args.timestep_low_threshold})")
+        logger.info(f"  🎛 时间步感知: ON (早期重结构, 后期重纹理)")
     
     # =========================================================================
     # 6. DataLoader
     # =========================================================================
-    logger.info("\n[DATA] Loading dataset...")
+    logger.info("\n[5/7] 加载数据集...")
     args.dataset_config = args.config
     dataloader = create_dataloader(args)
-    logger.info(f"  Dataset size: {len(dataloader)} batches")
+    logger.info(f"  ✓ {len(dataloader)} batches")
     
     # 正则数据集加载 (防止过拟合)
     reg_dataloader = create_reg_dataloader(args)
@@ -471,36 +466,32 @@ def main():
     if reg_dataloader:
         reg_weight = reg_config.get('weight', 1.0)
         reg_ratio = reg_config.get('ratio', 0.5)
-        logger.info(f"  [REG] 正则数据集已加载: {len(reg_dataloader)} batches, weight={reg_weight}, ratio={reg_ratio}")
+        logger.info(f"  + 正则数据集: {len(reg_dataloader)} batches")
     else:
         reg_weight = 0.0
         reg_ratio = 0.0
-        logger.info("  [REG] 未启用正则数据集")
     
     # =========================================================================
     # 7. Optimizer and Scheduler
     # =========================================================================
-    logger.info("\n[OPT] Setting up optimizer...")
-    logger.info(f"  Type: {args.optimizer_type}, LR: {args.learning_rate}, Weight Decay: {args.weight_decay}")
+    logger.info("\n[6/7] 配置优化器...")
+    logger.info(f"  ✓ {args.optimizer_type}, LR={args.learning_rate}")
     
     if args.optimizer_type == "AdamW8bit":
         try:
             import bitsandbytes as bnb
             optimizer = bnb.optim.AdamW8bit(trainable_params, lr=args.learning_rate, weight_decay=args.weight_decay)
-            logger.info("  Using AdamW8bit optimizer")
         except ImportError:
             optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=args.weight_decay)
-            logger.info("  [Fallback] bitsandbytes not found, using standard AdamW")
+            logger.warning("  ⚠ bitsandbytes 未安装，使用标准 AdamW")
     elif args.optimizer_type == "Adafactor":
         from transformers.optimization import Adafactor
         optimizer = Adafactor(
             trainable_params, lr=args.learning_rate, weight_decay=args.weight_decay,
             scale_parameter=False, relative_step=False
         )
-        logger.info("  Using Adafactor optimizer")
     else:  # AdamW
         optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=args.weight_decay)
-        logger.info("  Using standard AdamW optimizer")
     
     # Prepare with accelerator FIRST (before calculating steps)
     optimizer, dataloader, lr_scheduler_placeholder = accelerator.prepare(
@@ -518,22 +509,16 @@ def main():
         num_cycles=args.lr_num_cycles,
     )
     
-    logger.info(f"  Num Epochs = {args.num_train_epochs}")
-    logger.info(f"  Num Batches per Epoch = {len(dataloader)}")
-    logger.info(f"  Gradient Accumulation = {args.gradient_accumulation_steps}")
-    logger.info(f"  Total Optimization Steps = {max_train_steps}")
+    logger.info(f"  ✓ 训练轮数: {args.num_train_epochs}, 总步数: {max_train_steps}")
     
     # =========================================================================
     # 8. Training Loop
     # =========================================================================
-    logger.info("\n" + "=" * 60)
-    logger.info("[TARGET] Starting training")
+    logger.info("\n[7/7] 开始训练...")
     logger.info("=" * 60)
     
     # 创建 L2 调度器
     l2_scheduler = create_l2_scheduler_from_args(args)
-    if l2_scheduler:
-        logger.info(f"[L2 Schedule] {l2_scheduler.get_schedule_info()}")
     
     global_step = 0
     ema_loss = None
@@ -657,18 +642,10 @@ def main():
                     style_loss_val = style_loss.item()
                 loss_components['style'] = style_loss_val
                 
-                # 记录时间步感知权重 (首步调试)
-                if global_step == 0 and ts_weights:
-                    logger.info(f"  [TimestepAware] Sample weights: freq_scale={ts_weights['lambda_freq_scale']:.2f}, style_scale={ts_weights['lambda_style_scale']:.2f}")
-                
                 # === RAFT: L2 混合模式 (锚点流 + 自由流) ===
                 l2_loss_val = 0.0
                 raft_mode = getattr(args, 'raft_mode', False)
                 free_stream_ratio = getattr(args, 'free_stream_ratio', 0.3)
-                
-                # 第一步调试日志
-                if global_step == 0:
-                    logger.info(f"  [RAFT DEBUG] In loop: raft_mode={raft_mode}, free_stream_ratio={free_stream_ratio}")
                 
                 if raft_mode and free_stream_ratio > 0:
                     # 自由流: 全时间步均匀随机采样
