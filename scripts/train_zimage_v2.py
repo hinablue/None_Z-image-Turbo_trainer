@@ -40,6 +40,7 @@ from zimage_trainer.dataset.dataloader import create_dataloader, create_reg_data
 from zimage_trainer.acrf_trainer import ACRFTrainer
 from zimage_trainer.utils.snr_utils import compute_snr_weights
 from zimage_trainer.utils.l2_scheduler import L2RatioScheduler, create_l2_scheduler_from_args
+from zimage_trainer.utils.timestep_aware_loss import TimestepAwareLossScheduler, create_timestep_aware_scheduler_from_args
 from zimage_trainer.losses.frequency_aware_loss import FrequencyAwareLoss
 from zimage_trainer.losses.style_structure_loss import LatentStyleStructureLoss
 
@@ -136,6 +137,14 @@ def parse_args():
         help="L2 同时计算锚点时间步")
     parser.add_argument("--l2_anchor_ratio", type=float, default=0.3,
         help="L2 锚点时间步权重 (仅当 include_anchor=True 时生效)")
+    
+    # 时间步感知 Loss 权重
+    parser.add_argument("--enable_timestep_aware_loss", type=bool, default=False,
+        help="启用时间步分区动态 Loss 权重")
+    parser.add_argument("--timestep_high_threshold", type=float, default=0.7,
+        help="高噪声区阈值 (σ > 此值时重结构)")
+    parser.add_argument("--timestep_low_threshold", type=float, default=0.3,
+        help="低噪声区阈值 (σ < 此值时重纹理)")
     
     # LoRA 高级选项
     parser.add_argument("--train_adaln", type=bool, default=False,
@@ -235,6 +244,12 @@ def parse_args():
         args.l2_milestones = acrf_cfg.get("l2_milestones", args.l2_milestones)
         args.l2_include_anchor = acrf_cfg.get("l2_include_anchor", args.l2_include_anchor)
         args.l2_anchor_ratio = acrf_cfg.get("l2_anchor_ratio", args.l2_anchor_ratio)
+        
+        # Timestep-aware Loss
+        args.enable_timestep_aware_loss = acrf_cfg.get("enable_timestep_aware_loss", 
+                                          training_cfg.get("enable_timestep_aware_loss", args.enable_timestep_aware_loss))
+        args.timestep_high_threshold = acrf_cfg.get("timestep_high_threshold", args.timestep_high_threshold)
+        args.timestep_low_threshold = acrf_cfg.get("timestep_low_threshold", args.timestep_low_threshold)
         
         # LoRA 高级选项
         lora_cfg = config.get("lora", {})
@@ -436,6 +451,11 @@ def main():
     else:
         logger.info(f"  [RAFT] L2 混合模式 Disabled")
     
+    # 时间步感知 Loss 权重调度器
+    timestep_aware_scheduler = create_timestep_aware_scheduler_from_args(args)
+    if timestep_aware_scheduler:
+        logger.info(f"  [TimestepAware] Enabled (high>{args.timestep_high_threshold}, low<{args.timestep_low_threshold})")
+    
     # =========================================================================
     # 6. DataLoader
     # =========================================================================
@@ -597,6 +617,11 @@ def main():
                 # Compute Losses
                 # =========================================================
                 
+                # 获取时间步感知权重 (如果启用)
+                ts_weights = None
+                if timestep_aware_scheduler:
+                    ts_weights = timestep_aware_scheduler.get_mean_weights(timesteps, num_train_timesteps=1000)
+                
                 # L1 Loss
                 l1_loss_val = F.l1_loss(model_pred, target_velocity)
                 loss = args.lambda_l1 * l1_loss_val
@@ -613,20 +638,28 @@ def main():
                 loss_components['cosine'] = cos_loss_val
                 
                 # Frequency Loss (requires noisy_latents and timesteps)
+                # 应用时间步感知权重缩放
                 freq_loss_val = 0.0
                 if freq_loss_fn and args.lambda_freq > 0:
                     freq_loss = freq_loss_fn(model_pred, target_velocity, noisy_latents, timesteps, num_train_timesteps=1000)
-                    loss = loss + args.lambda_freq * freq_loss
+                    freq_scale = ts_weights['lambda_freq_scale'] if ts_weights else 1.0
+                    loss = loss + args.lambda_freq * freq_scale * freq_loss
                     freq_loss_val = freq_loss.item()
                 loss_components['freq'] = freq_loss_val
                 
                 # Style-Structure Loss (requires noisy_latents and timesteps)
+                # 应用时间步感知权重缩放
                 style_loss_val = 0.0
                 if style_loss_fn and args.lambda_style > 0:
                     style_loss = style_loss_fn(model_pred, target_velocity, noisy_latents, timesteps, num_train_timesteps=1000)
-                    loss = loss + args.lambda_style * style_loss
+                    style_scale = ts_weights['lambda_style_scale'] if ts_weights else 1.0
+                    loss = loss + args.lambda_style * style_scale * style_loss
                     style_loss_val = style_loss.item()
                 loss_components['style'] = style_loss_val
+                
+                # 记录时间步感知权重 (首步调试)
+                if global_step == 0 and ts_weights:
+                    logger.info(f"  [TimestepAware] Sample weights: freq_scale={ts_weights['lambda_freq_scale']:.2f}, style_scale={ts_weights['lambda_style_scale']:.2f}")
                 
                 # === RAFT: L2 混合模式 (锚点流 + 自由流) ===
                 l2_loss_val = 0.0
