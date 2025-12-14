@@ -429,8 +429,8 @@ def main():
     else:
         optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=args.weight_decay)
     
-    # Prepare with accelerator
-    transformer, optimizer, dataloader = accelerator.prepare(transformer, optimizer, dataloader)
+    # Prepare with accelerator (不包装 transformer，与 LoRA 脚本一致)
+    optimizer, dataloader = accelerator.prepare(optimizer, dataloader)
     
     # Calculate max_train_steps
     max_train_steps = len(dataloader) * args.num_train_epochs // args.gradient_accumulation_steps
