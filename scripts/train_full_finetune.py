@@ -599,7 +599,7 @@ def main():
                     num_train_timesteps=1000,
                     snr_gamma=args.snr_gamma,
                     snr_floor=args.snr_floor
-                )
+                ).to(weight_dtype)
                 anchor_loss_weighted = loss * snr_weights.mean()
                 
                 if l2_loss_val > 0:
