@@ -135,121 +135,55 @@ def process_image(
     save_file(sd, str(output_file))
 
 
-def process_batch(
-    image_paths: List[Path],
-    vae,
-    resolution: int,
-    output_dir: Path,
-    device: torch.device,
-    dtype: torch.dtype = torch.bfloat16,
-    input_root: Path = None,
-) -> Tuple[int, int]:
-    """
-    批量处理图片
+def worker_process(gpu_id: int, image_paths: List[Path], args, output_dir: Path, total_count: int, shared_counter, counter_lock):
+    """单个 GPU worker 进程"""
+    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
 
-    Returns:
-        (processed_count, error_count)
-    """
-    import numpy as np
+    device = torch.device("cuda:0")  # 在这个进程中只能看到一张卡
+    dtype = torch.bfloat16
 
-    # 加载所有图片并获取尺寸
-    images_data = []
-
-    for image_path in image_paths:
-        try:
-            image = Image.open(image_path).convert('RGB')
-            image = resize_image(image, resolution)
-            w, h = image.size
-
-            img_array = np.array(image).astype(np.float32) / 255.0
-            img_tensor = torch.from_numpy(img_array).permute(2, 0, 1)  # (3, H, W)
-
-            images_data.append((img_tensor, image_path, w, h))
-        except Exception as e:
-            logger.warning(f"Failed to load {image_path}: {e}")
-            continue
-
-    if not images_data:
-        return 0, len(image_paths)
-
-    # 按尺寸分组，相同尺寸的可以批量处理
-    size_groups = {}
-    for img_tensor, image_path, w, h in images_data:
-        size_key = (w, h)
-        if size_key not in size_groups:
-            size_groups[size_key] = []
-        size_groups[size_key].append((img_tensor, image_path, w, h))
+    # 加载 VAE
+    print(f"[GPU {gpu_id}] Loading VAE...", flush=True)
+    vae = load_vae(args.vae, device=device, dtype=dtype)
+    print(f"[GPU {gpu_id}] VAE loaded, processing {len(image_paths)} images", flush=True)
 
     processed = 0
-    errors = 0
-
-    # 处理每个尺寸组
-    for (w, h), group in size_groups.items():
-        # 将相同尺寸的图片堆叠成批次
-        batch_tensors = [item[0] for item in group]
-        batch_paths = [item[1] for item in group]
-
-        # 堆叠为批次: (B, 3, H, W)
-        batch_tensor = torch.stack(batch_tensors).to(device=device, dtype=dtype)
-
-        # 归一化到 [-1, 1]
-        batch_tensor = batch_tensor * 2.0 - 1.0
+    for i, image_path in enumerate(image_paths):
+        # 检查是否已存在
+        name = image_path.stem
+        existing = list(output_dir.glob(f"{name}_*_{ARCHITECTURE}.safetensors"))
+        if args.skip_existing and existing:
+            # 跳过但仍更新计数
+            with counter_lock:
+                shared_counter.value += 1
+                current = shared_counter.value
+            if current % 10 == 0 or current == total_count:
+                print(f"Progress: {current}/{total_count}", flush=True)
+            continue
 
         try:
-            # 批量编码
-            with torch.no_grad():
-                latents = vae.encode(batch_tensor).latent_dist.sample()
-
-            # 应用 scaling 和 shift (Pipeline format)
-            scaling_factor = getattr(vae.config, 'scaling_factor', 0.3611)
-            shift_factor = getattr(vae.config, 'shift_factor', 0.1159)
-            latents = (latents - shift_factor) * scaling_factor
-
-            # 移动到 CPU
-            latents = latents.cpu()
-
-            # 保存每张图片的 latent
-            F, H, W_latent = 1, latents.shape[2], latents.shape[3]
-            dtype_str = "bf16" if dtype == torch.bfloat16 else "fp16"
-
-            for i, image_path in enumerate(batch_paths):
-                try:
-                    # 计算输出路径 (保持目录结构)
-                    if input_root:
-                        try:
-                            rel_path = image_path.relative_to(input_root)
-                            target_dir = output_dir / rel_path.parent
-                        except ValueError:
-                            target_dir = output_dir
-                    else:
-                        target_dir = output_dir
-
-                    target_dir.mkdir(parents=True, exist_ok=True)
-
-                    # 文件名格式: {name}_{WxH}_{arch}.safetensors
-                    name = image_path.stem
-                    output_file = target_dir / f"{name}_{w}x{h}_{ARCHITECTURE}.safetensors"
-
-                    # 保存为 safetensors
-                    sd = {f"latents_{F}x{H}x{W_latent}_{dtype_str}": latents[i]}
-                    save_file(sd, str(output_file))
-                    processed += 1
-                except Exception as e:
-                    logger.error(f"Failed to save {image_path}: {e}")
-                    errors += 1
-
+            process_image(image_path, vae, args.resolution, output_dir, device, dtype, input_root=Path(args.input_dir))
+            processed += 1
         except Exception as e:
-            logger.error(f"Failed to encode batch: {e}")
-            # 如果批量处理失败，回退到单张处理
-            for img_tensor, image_path, w, h in group:
-                try:
-                    process_image(image_path, vae, resolution, output_dir, device, dtype, input_root)
-                    processed += 1
-                except Exception as e2:
-                    logger.error(f"Failed to process {image_path}: {e2}")
-                    errors += 1
+            print(f"[GPU {gpu_id}] Error: {image_path.name}: {e}", flush=True)
 
-    return processed, errors
+        # 更新共享计数器并输出进度
+        with counter_lock:
+            shared_counter.value += 1
+            current = shared_counter.value
+
+        # 每 10 张或最后一张输出进度
+        if current % 10 == 0 or current == total_count:
+            print(f"Progress: {current}/{total_count}", flush=True)
+
+    # 清理
+    del vae
+    import gc
+    gc.collect()
+    torch.cuda.empty_cache()
+
+    return processed
 
 
 def main():
@@ -260,94 +194,112 @@ def main():
     parser.add_argument("--resolution", type=int, default=1024, help="Target resolution")
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
     parser.add_argument("--skip_existing", action="store_true", help="Skip existing cache files")
+    parser.add_argument("--num_gpus", type=int, default=0, help="Number of GPUs (0=auto detect)")
 
     args = parser.parse_args()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.bfloat16
 
     # 创建输出目录
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    # 加载 VAE
-    print(f"Loading VAE: {args.vae}", flush=True)
-    vae = load_vae(args.vae, device=device, dtype=dtype)
-    print("VAE loaded successfully", flush=True)
 
     # 查找图片
     images = find_images(args.input_dir)
     total = len(images)
     print(f"Found {total} images", flush=True)
 
-    # 过滤已存在的图片
-    images_to_process = []
-    skipped = 0
-    input_root = Path(args.input_dir)
+    if total == 0:
+        print("No images to process", flush=True)
+        return
 
-    for image_path in images:
-        if args.skip_existing:
-            # 计算实际的输出路径（与保存逻辑一致）
-            if input_root:
-                try:
-                    rel_path = image_path.relative_to(input_root)
-                    target_dir = output_dir / rel_path.parent
-                except ValueError:
-                    target_dir = output_dir
-            else:
-                target_dir = output_dir
+    # 检测 GPU 数量
+    num_gpus = args.num_gpus if args.num_gpus > 0 else torch.cuda.device_count()
 
-            # 检查该目录下是否有匹配的缓存文件
-            # 文件名格式: {name}_{WxH}_{arch}.safetensors
+    if num_gpus <= 1:
+        # 单 GPU 模式（兼容原有逻辑）
+        print(f"Using single GPU mode", flush=True)
+        print(f"Progress: 0/{total}", flush=True)
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        dtype = torch.bfloat16
+
+        print(f"Loading VAE: {args.vae}", flush=True)
+        vae = load_vae(args.vae, device=device, dtype=dtype)
+        print("VAE loaded successfully", flush=True)
+
+        processed = 0
+        skipped = 0
+
+        for i, image_path in enumerate(images, 1):
             name = image_path.stem
-            pattern = f"{name}_*_{ARCHITECTURE}.safetensors"
-            existing = list(target_dir.glob(pattern))
-            if existing:
+            existing = list(output_dir.glob(f"{name}_*_{ARCHITECTURE}.safetensors"))
+            if args.skip_existing and existing:
                 skipped += 1
+                print(f"Progress: {i}/{total}", flush=True)
                 continue
-        images_to_process.append(image_path)
 
-    # 批量处理图片
-    processed = 0
-    errors = 0
-    batch_size = max(1, args.batch_size)  # 确保至少为 1
+            try:
+                process_image(image_path, vae, args.resolution, output_dir, device, dtype, input_root=Path(args.input_dir))
+                processed += 1
+                print(f"Progress: {i}/{total}", flush=True)
+            except Exception as e:
+                print(f"Error: {image_path}: {e}", flush=True)
+                print(f"Progress: {i}/{total}", flush=True)
 
-    # 创建进度条
-    pbar = tqdm(total=total, desc="Caching latents", unit="image")
+        print(f"Latent caching completed! Processed: {processed}, Skipped: {skipped}", flush=True)
 
-    # 将图片分批
-    for batch_start in range(0, len(images_to_process), batch_size):
-        batch_end = min(batch_start + batch_size, len(images_to_process))
-        batch_images = images_to_process[batch_start:batch_end]
+        del vae
+        import gc
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        print("VAE unloaded, GPU memory released", flush=True)
 
-        # 批量处理
-        batch_processed, batch_errors = process_batch(
-            batch_images,
-            vae,
-            args.resolution,
-            output_dir,
-            device,
-            dtype,
-            input_root=input_root
-        )
+    else:
+        # 多 GPU 模式
+        import multiprocessing as mp
+        from concurrent.futures import ProcessPoolExecutor, as_completed
 
-        processed += batch_processed
-        errors += batch_errors
+        print(f"🚀 Multi-GPU mode: using {num_gpus} GPUs", flush=True)
+        print(f"Progress: 0/{total}", flush=True)
 
-        # 更新进度条: 已处理的批次数量
-        pbar.update(len(batch_images))
+        # 分片
+        chunk_size = (total + num_gpus - 1) // num_gpus
+        chunks = []
+        for i in range(num_gpus):
+            start = i * chunk_size
+            end = min(start + chunk_size, total)
+            if start < total:
+                chunks.append((i, images[start:end]))
 
-    pbar.close()
+        print(f"Distributing {total} images across {len(chunks)} GPUs", flush=True)
+        for gpu_id, chunk in chunks:
+            print(f"  GPU {gpu_id}: {len(chunk)} images", flush=True)
 
-    print(f"Latent caching completed! Processed: {processed}, Skipped: {skipped}, Errors: {errors}", flush=True)
+        # 创建共享计数器和锁
+        manager = mp.Manager()
+        shared_counter = manager.Value('i', 0)
+        counter_lock = manager.Lock()
 
-    # 清理显存
-    del vae
-    import gc
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    print("VAE unloaded, GPU memory released", flush=True)
+        # 启动进程池
+        mp.set_start_method('spawn', force=True)
+
+        total_processed = 0
+        with ProcessPoolExecutor(max_workers=num_gpus) as executor:
+            futures = {
+                executor.submit(worker_process, gpu_id, chunk, args, output_dir, total, shared_counter, counter_lock): gpu_id
+                for gpu_id, chunk in chunks
+            }
+
+            for future in as_completed(futures):
+                gpu_id = futures[future]
+                try:
+                    processed = future.result()
+                    total_processed += processed
+                    print(f"[GPU {gpu_id}] Completed: {processed} images", flush=True)
+                except Exception as e:
+                    print(f"[GPU {gpu_id}] Worker error: {e}", flush=True)
+
+        print(f"Multi-GPU latent caching completed! Total processed: {total_processed}", flush=True)
 
 
 if __name__ == "__main__":

@@ -958,10 +958,45 @@ async def stop_resize():
     resize_state["running"] = False
     return {"success": True}
 
+def _resize_single_image(args):
+    """单张图片缩放处理（进程池 worker 函数）"""
+    img_path_str, max_long_edge, quality, sharpen = args
+    img_path = Path(img_path_str)
+    
+    try:
+        with Image.open(img_path) as img:
+            w, h = img.size
+            long_edge = max(w, h)
+            
+            # 只处理超过目标尺寸的图片
+            if long_edge > max_long_edge:
+                # 转换为 RGB
+                if img.mode in ('RGBA', 'P'):
+                    img = img.convert('RGB')
+                elif img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # 使用高质量缩放
+                img_resized = resize_high_quality(img, max_long_edge, sharpen=sharpen)
+                
+                # 保存（覆盖原文件）
+                if img_path.suffix.lower() in ['.jpg', '.jpeg']:
+                    img_resized.save(img_path, format='JPEG', quality=quality, subsampling=0)
+                elif img_path.suffix.lower() == '.png':
+                    img_resized.save(img_path, format='PNG', compress_level=1)
+                elif img_path.suffix.lower() == '.webp':
+                    img_resized.save(img_path, format='WEBP', quality=quality)
+                return (True, img_path.name)
+        return (True, img_path.name)
+    except Exception as e:
+        return (False, f"{img_path.name}: {str(e)}")
+
 @router.post("/resize")
 async def resize_images(request: ResizeImagesRequest):
-    """批量缩放图片（按长边，不可撤销）"""
+    """批量缩放图片（多进程并行，按 CPU 核心数顶满跑）"""
     global resize_state
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
     
     if resize_state["running"]:
         raise HTTPException(status_code=400, detail="缩放任务正在进行中")
@@ -989,57 +1024,55 @@ async def resize_images(request: ResizeImagesRequest):
         "current_file": ""
     }
     
-    # 后台执行缩放
-    async def run_resize():
-        global resize_state
-        for img_path in image_paths:
-            if not resize_state["running"]:
-                break
-            
-            resize_state["current_file"] = img_path.name
-            
-            try:
-                with Image.open(img_path) as img:
-                    w, h = img.size
-                    long_edge = max(w, h)
-                    
-                    # 只处理超过目标尺寸的图片
-                    if long_edge > request.max_long_edge:
-                        # 转换为 RGB
-                        if img.mode in ('RGBA', 'P'):
-                            img = img.convert('RGB')
-                        elif img.mode != 'RGB':
-                            img = img.convert('RGB')
-                        
-                        # 使用高质量缩放
-                        img_resized = resize_high_quality(
-                            img, 
-                            request.max_long_edge, 
-                            sharpen=request.sharpen
-                        )
-                        
-                        # 保存（覆盖原文件）
-                        if img_path.suffix.lower() in ['.jpg', '.jpeg']:
-                            img_resized.save(img_path, format='JPEG', quality=request.quality, subsampling=0)
-                        elif img_path.suffix.lower() == '.png':
-                            img_resized.save(img_path, format='PNG', compress_level=1)
-                        elif img_path.suffix.lower() == '.webp':
-                            img_resized.save(img_path, format='WEBP', quality=request.quality)
-            except:
-                pass  # 跳过无法处理的文件
-            
-            resize_state["completed"] += 1
-            await asyncio.sleep(0.01)
-        
-        resize_state["running"] = False
-        resize_state["current_file"] = ""
+    # 获取 CPU 核心数
+    num_workers = multiprocessing.cpu_count()
+    print(f"[Resize] 启动多进程并行处理，使用 {num_workers} 个 worker")
     
-    asyncio.create_task(run_resize())
+    # 准备参数
+    args_list = [
+        (str(img_path), request.max_long_edge, request.quality, request.sharpen)
+        for img_path in image_paths
+    ]
+    
+    # 后台多进程执行缩放
+    def run_resize_parallel():
+        global resize_state
+        try:
+            with ProcessPoolExecutor(max_workers=num_workers) as executor:
+                futures = {executor.submit(_resize_single_image, args): args[0] for args in args_list}
+                
+                for future in as_completed(futures):
+                    if not resize_state["running"]:
+                        # 取消剩余任务
+                        for f in futures:
+                            f.cancel()
+                        break
+                    
+                    img_path = futures[future]
+                    resize_state["current_file"] = Path(img_path).name
+                    resize_state["completed"] += 1
+                    
+                    try:
+                        success, msg = future.result()
+                        if not success:
+                            print(f"[Resize] Error: {msg}")
+                    except Exception as e:
+                        print(f"[Resize] Worker error: {e}")
+        except Exception as e:
+            print(f"[Resize] Pool error: {e}")
+        finally:
+            resize_state["running"] = False
+            resize_state["current_file"] = ""
+    
+    # 在后台线程中运行进程池
+    thread = threading.Thread(target=run_resize_parallel, daemon=True)
+    thread.start()
     
     return {
         "success": True,
-        "message": f"开始处理 {len(image_paths)} 张图片",
-        "total": len(image_paths)
+        "message": f"开始处理 {len(image_paths)} 张图片 (使用 {num_workers} 进程并行)",
+        "total": len(image_paths),
+        "workers": num_workers
     }
 
 class SaveCaptionRequest(BaseModel):

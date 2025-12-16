@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException
+import asyncio
 from fastapi.responses import FileResponse
 from typing import Optional, List
 from datetime import datetime
@@ -230,106 +231,198 @@ async def delete_lora(path: str):
 
 @router.post("/generate")
 async def generate_image(req: GenerationRequest):
-    """生成图片 - 同步版本，支持多模型"""
+    """生成图片 - 异步版本，不阻塞其他请求"""
     
-    try:
-        model_type = req.model_type.lower()
-        pipe = state.get_pipeline(model_type)
-        
-        # 使用抽象层加载本地模型
-        if pipe is None:
-            pipe = load_pipeline_with_adapter(model_type)
-            state.set_pipeline(model_type, pipe)
-        
-        # LoRA handling (每个模型独立管理)
-        current_lora = state.get_lora_path(model_type)
-        if req.lora_path:
-            if current_lora != req.lora_path:
+    def _sync_generate():
+        """同步生成逻辑，将在线程池中执行"""
+        try:
+            model_type = req.model_type.lower()
+            
+            # 调试日志
+            print(f"[DEBUG] comparison_mode={req.comparison_mode}, lora_path={req.lora_path}")
+            
+            pipe = state.get_pipeline(model_type)
+            
+            # 使用抽象层加载本地模型
+            if pipe is None:
+                pipe = load_pipeline_with_adapter(model_type)
+                state.set_pipeline(model_type, pipe)
+            
+            # Seed - 在对比模式下需要固定 seed
+            generator = None
+            actual_seed = req.seed
+            if actual_seed != -1:
+                generator = torch.Generator("cuda" if torch.cuda.is_available() else "cpu").manual_seed(actual_seed)
+            else:
+                generator = torch.Generator("cuda" if torch.cuda.is_available() else "cpu")
+                actual_seed = generator.seed()
+            
+            # ========== 对比模式：生成两张图 ==========
+            if req.comparison_mode and req.lora_path:
+                print(f"[DEBUG] 进入对比模式分支！")
+                images = []
+                
+                # 1. 先生成无 LoRA 的原图
+                current_lora = state.get_lora_path(model_type)
                 if current_lora:
                     try:
                         pipe.unload_lora_weights()
                     except:
                         pass
+                    state.set_lora_path(model_type, None)
+                
+                pipe.cross_attention_kwargs = None
+                
+                # 重置 generator 确保相同 seed
+                gen_no_lora = torch.Generator("cuda" if torch.cuda.is_available() else "cpu").manual_seed(actual_seed)
+                
+                if model_type == "zimage":
+                    image_no_lora = pipe(
+                        prompt=req.prompt,
+                        negative_prompt=req.negative_prompt,
+                        num_inference_steps=req.steps,
+                        guidance_scale=req.guidance_scale,
+                        width=req.width,
+                        height=req.height,
+                        generator=gen_no_lora,
+                    ).images[0]
+                elif model_type == "longcat":
+                    image_no_lora = pipe(
+                        prompt=req.prompt,
+                        num_inference_steps=req.steps,
+                        guidance_scale=req.guidance_scale,
+                        width=req.width,
+                        height=req.height,
+                        generator=gen_no_lora,
+                    ).images[0]
+                
+                images.append(image_no_lora)
+                
+                # 2. 再生成有 LoRA 的效果图
                 pipe.load_lora_weights(req.lora_path)
                 state.set_lora_path(model_type, req.lora_path)
-        else:
-            if current_lora:
-                try:
-                    pipe.unload_lora_weights()
-                except:
-                    pass
-                state.set_lora_path(model_type, None)
-        
-        # Seed
-        generator = None
-        actual_seed = req.seed
-        if actual_seed != -1:
-            generator = torch.Generator("cuda" if torch.cuda.is_available() else "cpu").manual_seed(actual_seed)
-        else:
-            generator = torch.Generator("cuda" if torch.cuda.is_available() else "cpu")
-            actual_seed = generator.seed()
-        
-        if req.lora_path:
-            pipe.cross_attention_kwargs = {"scale": req.lora_scale}
-        
-        # 根据模型类型调用不同的生成接口
-        if model_type == "zimage":
-            image = pipe(
-                prompt=req.prompt,
-                negative_prompt=req.negative_prompt,
-                num_inference_steps=req.steps,
-                guidance_scale=req.guidance_scale,
-                width=req.width,
-                height=req.height,
-                generator=generator,
-            ).images[0]
-        elif model_type == "longcat":
-            # LongCat/FLUX 使用不同的参数
-            image = pipe(
-                prompt=req.prompt,
-                num_inference_steps=req.steps,
-                guidance_scale=req.guidance_scale,
-                width=req.width,
-                height=req.height,
-                generator=generator,
-            ).images[0]
-        
-        if pipe:
-            pipe.cross_attention_kwargs = None
-        
-        # Save
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        generated_dir = OUTPUTS_DIR / "generated"
-        generated_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{timestamp}.png"
-        image_path = generated_dir / filename
-        image.save(image_path)
-        
-        # Metadata (包含模型类型)
-        metadata = req.dict()
-        metadata["timestamp"] = timestamp
-        metadata["seed"] = actual_seed
-        with open(generated_dir / f"{timestamp}.json", "w", encoding="utf-8") as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=2)
-        
-        # Base64
-        buffered = io.BytesIO()
-        image.save(buffered, format="PNG")
-        img_base64 = base64.b64encode(buffered.getvalue()).decode()
-        
-        return {
-            "success": True,
-            "image": f"data:image/png;base64,{img_base64}",
-            "filename": filename,
-            "timestamp": timestamp,
-            "seed": actual_seed,
-            "model_type": model_type
-        }
-        
-    except Exception as e:
-        import traceback
-        traceback.print_exc()
-        return {"success": False, "message": str(e)}
+                pipe.cross_attention_kwargs = {"scale": req.lora_scale}
+                
+                # 重置 generator 确保相同 seed
+                gen_with_lora = torch.Generator("cuda" if torch.cuda.is_available() else "cpu").manual_seed(actual_seed)
+                
+                if model_type == "zimage":
+                    image_with_lora = pipe(
+                        prompt=req.prompt,
+                        negative_prompt=req.negative_prompt,
+                        num_inference_steps=req.steps,
+                        guidance_scale=req.guidance_scale,
+                        width=req.width,
+                        height=req.height,
+                        generator=gen_with_lora,
+                    ).images[0]
+                elif model_type == "longcat":
+                    image_with_lora = pipe(
+                        prompt=req.prompt,
+                        num_inference_steps=req.steps,
+                        guidance_scale=req.guidance_scale,
+                        width=req.width,
+                        height=req.height,
+                        generator=gen_with_lora,
+                    ).images[0]
+                
+                images.append(image_with_lora)
+                pipe.cross_attention_kwargs = None
+                
+                # 3. 横向拼接两张图
+                total_width = images[0].width + images[1].width
+                max_height = max(images[0].height, images[1].height)
+                combined = Image.new('RGB', (total_width, max_height))
+                combined.paste(images[0], (0, 0))
+                combined.paste(images[1], (images[0].width, 0))
+                image = combined
+                
+            # ========== 普通模式：生成单张图 ==========
+            else:
+                # LoRA handling (每个模型独立管理)
+                current_lora = state.get_lora_path(model_type)
+                if req.lora_path:
+                    if current_lora != req.lora_path:
+                        if current_lora:
+                            try:
+                                pipe.unload_lora_weights()
+                            except:
+                                pass
+                        pipe.load_lora_weights(req.lora_path)
+                        state.set_lora_path(model_type, req.lora_path)
+                else:
+                    if current_lora:
+                        try:
+                            pipe.unload_lora_weights()
+                        except:
+                            pass
+                        state.set_lora_path(model_type, None)
+                
+                if req.lora_path:
+                    pipe.cross_attention_kwargs = {"scale": req.lora_scale}
+                
+                # 根据模型类型调用不同的生成接口
+                if model_type == "zimage":
+                    image = pipe(
+                        prompt=req.prompt,
+                        negative_prompt=req.negative_prompt,
+                        num_inference_steps=req.steps,
+                        guidance_scale=req.guidance_scale,
+                        width=req.width,
+                        height=req.height,
+                        generator=generator,
+                    ).images[0]
+                elif model_type == "longcat":
+                    # LongCat/FLUX 使用不同的参数
+                    image = pipe(
+                        prompt=req.prompt,
+                        num_inference_steps=req.steps,
+                        guidance_scale=req.guidance_scale,
+                        width=req.width,
+                        height=req.height,
+                        generator=generator,
+                    ).images[0]
+                
+                if pipe:
+                    pipe.cross_attention_kwargs = None
+            
+            # Save
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            generated_dir = OUTPUTS_DIR / "generated"
+            generated_dir.mkdir(parents=True, exist_ok=True)
+            filename = f"{timestamp}.png"
+            image_path = generated_dir / filename
+            image.save(image_path)
+            
+            # Metadata (包含模型类型)
+            metadata = req.dict()
+            metadata["timestamp"] = timestamp
+            metadata["seed"] = actual_seed
+            with open(generated_dir / f"{timestamp}.json", "w", encoding="utf-8") as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            
+            # Base64
+            buffered = io.BytesIO()
+            image.save(buffered, format="PNG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode()
+            
+            return {
+                "success": True,
+                "image": f"data:image/png;base64,{img_base64}",
+                "filename": filename,
+                "timestamp": timestamp,
+                "seed": actual_seed,
+                "model_type": model_type,
+                "comparison_mode": req.comparison_mode
+            }
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "message": str(e)}
+    
+    # 在线程池中执行同步生成，不阻塞事件循环
+    return await asyncio.to_thread(_sync_generate)
 
 
 @router.post("/generate-stream")

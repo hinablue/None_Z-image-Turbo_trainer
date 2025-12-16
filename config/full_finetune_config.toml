@@ -15,8 +15,10 @@ output_dir = "output/full_finetune_v1"
 output_name = "zimage-finetune"
 
 [acrf]
+# Turbo 开关
+enable_turbo = true
+
 # Turbo 步数（锚点数量）
-# 推荐值: 10 (默认), 4 (快速实验), 20 (高质量)
 turbo_steps = 10
 
 # 时间步 Shift 参数 (官方固定值 3.0)
@@ -24,6 +26,27 @@ shift = 3.0
 
 # 锚点抖动幅度 (建议 0.01-0.05)
 jitter_scale = 0.02
+
+# Latent Jitter (构图突破)
+latent_jitter_scale = 0.0
+
+# Min-SNR 加权参数
+snr_gamma = 5.0
+snr_floor = 0.1
+
+# RAFT L2 混合模式
+raft_mode = false
+free_stream_ratio = 0.3
+
+# L2 调度参数
+l2_schedule_mode = "constant"
+l2_initial_ratio = 0.3
+l2_final_ratio = 0.3
+
+# 时间步感知 Loss 权重
+enable_timestep_aware_loss = false
+timestep_high_threshold = 0.7
+timestep_low_threshold = 0.3
 
 [finetune]
 # ==========================================
@@ -38,83 +61,75 @@ jitter_scale = 0.02
 trainable_modules = "attention"
 
 # 冻结嵌入层（推荐开启）
-# 嵌入层包含大量位置编码等信息，微调容易破坏
 freeze_embeddings = true
 
 [training]
 # 优化器类型
-# 推荐: "AdamW8bit" (节省显存) 或 "Adafactor" (更省显存)
-# 可选: "AdamW", "AdamW8bit", "Adafactor"
 optimizer_type = "AdamW8bit"
 
 # 学习率 ⚠️ 全量微调需要非常小的学习率！
 # 建议范围: 1e-7 ~ 1e-5
-# - 1e-6: 保守，适合初次尝试
-# - 5e-6: 中等，适合 attention-only
-# - 1e-5: 激进，可能破坏预训练权重
 learning_rate = 1e-6
 
 # 权重衰减
 weight_decay = 0.01
 
 # 学习率调度器
-# 全量微调推荐 "cosine"，平滑衰减
 lr_scheduler = "cosine"
 
-# Warmup 步数（全量微调建议更长的 warmup）
+# Warmup 步数
 lr_warmup_steps = 100
 
 # Cosine 调度器循环次数
 lr_num_cycles = 1
 
-# Loss 权重配置
-# FFT Loss: 高频细节补偿
-lambda_fft = 0.05
-
-# Cosine Loss: 方向一致性（全量微调建议降低）
-lambda_cosine = 0.05
-
-# Min-SNR 加权
-snr_gamma = 5.0
-
 # 训练 Epoch 数
-# ⚠️ 全量微调通常需要更少的 Epoch，3-5 即可
 num_train_epochs = 5
 
 # 保存间隔 (Epoch)
 save_every_n_epochs = 1
 
-# 梯度累积步数
-# 全量微调显存需求大，建议更大的累积步数
-# 4-8 为推荐值
-gradient_accumulation_steps = 4
+# ==========================================
+# Loss 权重配置 (与 LoRA 训练一致)
+# ==========================================
 
-# 随机种子
-seed = 42
+# 基础损失权重
+lambda_l1 = 1.0
+lambda_cosine = 0.1
+
+# 频域感知 (开关+权重+子参数)
+enable_freq = false
+lambda_freq = 0.3
+alpha_hf = 1.0
+beta_lf = 0.2
+
+# 风格结构 (开关+权重+子参数)
+enable_style = false
+lambda_style = 0.3
+lambda_struct = 1.0
+lambda_light = 0.5
+lambda_color = 0.3
+lambda_tex = 0.5
 
 [advanced]
-# 高级设置
-
 # 梯度裁剪阈值
 max_grad_norm = 1.0
 
 # 梯度检查点（全量微调强制开启）
 gradient_checkpointing = true
 
+# 梯度累积步数
+gradient_accumulation_steps = 4
+
 # 混合精度
-# 推荐 "bf16"（数值稳定），"fp16" 也可
 mixed_precision = "bf16"
 
-# 注意力后端
-attention_backend = "sdpa"
-
-# Flash Attention（如果显卡支持）
-enable_flash_attention = false
+# 随机种子
+seed = 42
 
 # ============ Dataset 配置 ============
 [dataset]
 # 批次大小
-# 全量微调显存需求大，建议 batch_size=1
 batch_size = 1
 
 # 是否打乱数据
@@ -123,14 +138,14 @@ shuffle = true
 # 是否启用分桶
 enable_bucket = true
 
-# 文本编码最大序列长度 (需与缓存时一致)
+# 文本编码最大序列长度
 max_sequence_length = 512
 
 # --- 数据集列表 ---
 [[dataset.sources]]
 # 缓存目录路径
 cache_directory = "/path/to/your/dataset/cache"
-# 数据重复次数（全量微调建议较小值）
+# 数据重复次数
 num_repeats = 5
 # 分辨率上限
 resolution_limit = 1024
@@ -144,17 +159,14 @@ resolution_limit = 1024
 # 2. 选择可训练模块:
 #    - trainable_modules = "all"       # 全参数，需要 48GB+
 #    - trainable_modules = "attention" # 仅注意力，需要 24GB+（推荐）
-#    - trainable_modules = "mlp"       # 仅 MLP
-#    - trainable_modules = "norm"      # 仅归一化层
 # 
 # 3. 运行训练:
-#    python scripts/train_full_finetune.py --config config/full_finetune_config.toml
+#    accelerate launch --mixed_precision bf16 scripts/train_full_finetune.py \
+#        --config config/full_finetune_config.toml
 # 
-# 4. 显存不足时的应对措施:
-#    - 增大 gradient_accumulation_steps (如 8, 16)
-#    - 使用 trainable_modules = "attention" 或 "norm"
-#    - 使用 optimizer_type = "Adafactor"
-#    - 减小 batch_size 到 1
+# 4. 与 LoRA 训练功能一致，支持:
+#    - Freq/Style Loss（enable_freq/enable_style）
+#    - 时间步感知（enable_timestep_aware_loss）
+#    - RAFT L2 混合模式（raft_mode）
 # 
 # ==========================================
-
