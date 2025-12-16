@@ -25,15 +25,41 @@ CACHE_SUFFIXES = {
 ALL_LATENT_PATTERNS = ["*_zi.safetensors", "*_lc.safetensors"]
 ALL_TEXT_SUFFIXES = ["_zi_te.safetensors", "_lc_te.safetensors"]
 
+# 文件列表缓存（避免每次翻页都重新遍历）
+_dataset_cache: dict[str, tuple[list, float]] = {}  # {path: (files, timestamp)}
+_cache_ttl = 60  # 缓存有效期（秒）
+
+def _get_cached_files(path: Path) -> list:
+    """获取缓存的文件列表，过期则重新扫描"""
+    import time
+    path_str = str(path)
+    now = time.time()
+    
+    if path_str in _dataset_cache:
+        files, ts = _dataset_cache[path_str]
+        if now - ts < _cache_ttl:
+            return files
+    
+    # 重新扫描
+    image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
+    all_files = []
+    for file in path.rglob('*'):
+        if file.is_file() and file.suffix.lower() in image_extensions:
+            all_files.append(file)
+    all_files.sort(key=lambda f: f.name.lower())
+    
+    _dataset_cache[path_str] = (all_files, now)
+    return all_files
+
+
 @router.post("/scan")
 async def scan_dataset(request: DatasetScanRequest):
-    """Scan a directory for images (极速模式)
+    """Scan a directory for images (带缓存的极速模式)
     
-    优化策略（参考图库网站最佳实践）：
-    1. 使用 asyncio.to_thread 将文件遍历放到后台线程（不阻塞事件循环）
-    2. 不调用 Image.open() - 尺寸设为 0
-    3. 不调用 glob()/exists() - 缓存状态设为 null
-    4. 缓存统计通过 /stats API 异步获取
+    优化策略：
+    1. 文件列表缓存（翻页不重新遍历）
+    2. asyncio.to_thread 不阻塞事件循环
+    3. 恢复标注和文件大小显示
     """
     import asyncio
     
@@ -49,16 +75,8 @@ async def scan_dataset(request: DatasetScanRequest):
     
     def _scan_files_sync():
         """同步文件扫描（在线程池中执行）"""
-        image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
-        
-        # 收集文件路径
-        all_files = []
-        for file in path.rglob('*'):
-            if file.is_file() and file.suffix.lower() in image_extensions:
-                all_files.append(file)
-        
-        # 排序
-        all_files.sort(key=lambda f: f.name.lower())
+        # 使用缓存获取文件列表（翻页不重新遍历）
+        all_files = _get_cached_files(path)
         
         total_count = len(all_files)
         total_pages = (total_count + page_size - 1) // page_size
@@ -68,20 +86,33 @@ async def scan_dataset(request: DatasetScanRequest):
         end_idx = min(start_idx + page_size, total_count)
         page_files = all_files[start_idx:end_idx]
         
-        # 构建响应
+        # 构建响应（恢复标注和大小）
         images = []
+        total_size = 0
         for file in page_files:
             try:
                 stat = file.stat()
+                size = stat.st_size
+                total_size += size
+                
+                # 读取标注文件
+                caption = None
+                caption_file = file.with_suffix('.txt')
+                if caption_file.exists():
+                    try:
+                        caption = caption_file.read_text(encoding='utf-8').strip()
+                    except:
+                        pass
+                
                 encoded_path = urllib.parse.quote(str(file), safe='')
                 images.append({
                     "path": str(file),
                     "filename": file.name,
                     "width": 0,
                     "height": 0,
-                    "size": stat.st_size,
-                    "caption": None,
-                    "hasLatentCache": None,
+                    "size": size,
+                    "caption": caption,
+                    "hasLatentCache": None,  # 通过 /stats 异步获取
                     "hasTextCache": None,
                     "thumbnailUrl": f"/api/dataset/thumbnail?path={encoded_path}"
                 })
@@ -92,7 +123,7 @@ async def scan_dataset(request: DatasetScanRequest):
             "path": str(path),
             "name": path.name,
             "imageCount": total_count,
-            "totalSize": 0,
+            "totalSize": total_size,
             "images": images,
             "totalLatentCached": None,
             "totalTextCached": None,
@@ -106,7 +137,7 @@ async def scan_dataset(request: DatasetScanRequest):
             }
         }
     
-    # 在线程池中执行文件扫描，不阻塞事件循环
+    # 在线程池中执行，不阻塞事件循环
     return await asyncio.to_thread(_scan_files_sync)
 
 
@@ -126,13 +157,8 @@ async def get_dataset_stats(request: DatasetScanRequest):
     
     def _compute_stats_sync():
         """同步计算缓存统计（在线程池中执行）"""
-        image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
-        
-        # 收集所有图片文件
-        all_files = []
-        for file in path.rglob('*'):
-            if file.is_file() and file.suffix.lower() in image_extensions:
-                all_files.append(file)
+        # 使用缓存获取文件列表（避免重复遍历）
+        all_files = _get_cached_files(path)
         
         total_count = len(all_files)
         
