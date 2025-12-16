@@ -194,10 +194,25 @@
     </div>
 
     <!-- 图片网格 -->
-    <div class="image-grid" v-if="datasetStore.currentImages.length > 0">
+    <div class="image-grid-container" v-if="datasetStore.currentImages.length > 0">
+      <!-- 分页控制 - 顶部 -->
+      <div class="pagination-top">
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :total="datasetStore.currentImages.length"
+          :page-sizes="[50, 100, 200, 500]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          @size-change="handlePageSizeChange"
+          @current-change="handlePageChange"
+        />
+      </div>
+      
+      <div class="image-grid">
       <div 
         class="image-card glass-card"
-        v-for="image in datasetStore.currentImages"
+        v-for="image in paginatedImages"
         :key="image.path"
         :class="{ selected: datasetStore.selectedImages.has(image.path) }"
       >
@@ -247,6 +262,21 @@
         <div class="image-actions">
           <!-- 编辑按钮已移除，直接点击图片即可 -->
         </div>
+      </div>
+      </div>
+      
+      <!-- 分页控制 - 底部 -->
+      <div class="pagination-bottom">
+        <el-pagination
+          v-model:current-page="currentPage"
+          v-model:page-size="pageSize"
+          :total="datasetStore.currentImages.length"
+          :page-sizes="[50, 100, 200, 500]"
+          layout="total, sizes, prev, pager, next, jumper"
+          background
+          @size-change="handlePageSizeChange"
+          @current-change="handlePageChange"
+        />
       </div>
     </div>
 
@@ -804,6 +834,29 @@ const latentCachedCount = computed(() => {
 const textCachedCount = computed(() => {
   return datasetStore.currentImages.filter(img => img.hasTextCache).length
 })
+
+// 分页状态
+const currentPage = ref(1)
+const pageSize = ref(100)
+
+// 分页后的图片列表
+const paginatedImages = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  const end = start + pageSize.value
+  return datasetStore.currentImages.slice(start, end)
+})
+
+// 分页事件处理
+function handlePageChange(page: number) {
+  currentPage.value = page
+  // 滚动到顶部
+  window.scrollTo({ top: 0, behavior: 'smooth' })
+}
+
+function handlePageSizeChange(size: number) {
+  pageSize.value = size
+  currentPage.value = 1  // 重置到第一页
+}
 
 // 对话框状态
 const captionDialogVisible = ref(false) // Deprecated, kept for safety or remove
@@ -2668,5 +2721,39 @@ function formatSize(bytes: number): string {
   }
 }
 
+/* 分页容器样式 */
+.image-grid-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.pagination-top,
+.pagination-bottom {
+  display: flex;
+  justify-content: center;
+  padding: 12px 16px;
+  background: var(--bg-card);
+  border-radius: var(--radius-md);
+  
+  .el-pagination {
+    --el-pagination-bg-color: transparent;
+    --el-pagination-button-bg-color: var(--bg-hover);
+    
+    .el-pager li {
+      background: var(--bg-hover);
+      
+      &.is-active {
+        background: var(--primary);
+      }
+    }
+  }
+}
+
+.pagination-bottom {
+  margin-top: 8px;
+}
+
 </style>
+
 
