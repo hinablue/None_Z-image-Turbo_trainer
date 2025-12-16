@@ -253,7 +253,7 @@
         <div class="image-info">
           <div class="image-name" :title="image.filename">{{ image.filename }}</div>
           <div class="image-meta">
-            {{ image.width }}×{{ image.height }} · {{ formatSize(image.size) }}
+            {{ image.width && image.height ? `${image.width}×${image.height} · ` : '' }}{{ formatSize(image.size) }}
           </div>
           <div class="image-caption" :class="{ 'no-caption': !image.caption }">
             {{ image.caption || '无标注' }}
