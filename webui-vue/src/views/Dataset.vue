@@ -112,11 +112,13 @@
           </div>
           <div class="stat" :class="{ 'stat-success': latentCachedCount === datasetStore.currentDataset.imageCount }">
             <el-icon><Box /></el-icon>
-            <span>Latent: {{ latentCachedCount }} / {{ datasetStore.currentDataset.imageCount }}</span>
+            <span v-if="datasetStore.isLoadingStats">Latent: <el-icon class="is-loading"><Loading /></el-icon></span>
+            <span v-else>Latent: {{ latentCachedCount ?? '...' }} / {{ datasetStore.currentDataset.imageCount }}</span>
           </div>
           <div class="stat" :class="{ 'stat-success': textCachedCount === datasetStore.currentDataset.imageCount }">
             <el-icon><Document /></el-icon>
-            <span>Text: {{ textCachedCount }} / {{ datasetStore.currentDataset.imageCount }}</span>
+            <span v-if="datasetStore.isLoadingStats">Text: <el-icon class="is-loading"><Loading /></el-icon></span>
+            <span v-else>Text: {{ textCachedCount ?? '...' }} / {{ datasetStore.currentDataset.imageCount }}</span>
           </div>
         </div>
         <div class="info-actions">
@@ -843,8 +845,22 @@ const currentPage = computed(() => datasetStore.currentPage)
 const pageSize = computed(() => datasetStore.pageSize)
 const pagination = computed(() => datasetStore.pagination)
 
+// 监听数据集变化，异步获取缓存统计
+import { watch } from 'vue'
+watch(
+  () => datasetStore.currentDataset?.path,
+  (newPath) => {
+    if (newPath) {
+      // 数据集加载完成后，异步获取缓存统计（不阻塞首次加载）
+      datasetStore.fetchStats(newPath)
+    }
+  },
+  { immediate: true }
+)
+
 // 直接使用 store 的 currentImages（已经是当前页数据）
 const paginatedImages = computed(() => datasetStore.currentImages)
+
 
 // 分页事件处理（请求后端加载对应页）
 async function handlePageChange(page: number) {

@@ -98,6 +98,29 @@ export const useDatasetStore = defineStore('dataset', () => {
     }
   }
 
+  // 异步获取缓存统计（不阻塞首次加载）
+  const isLoadingStats = ref(false)
+
+  async function fetchStats(path?: string) {
+    const targetPath = path || currentDataset.value?.path
+    if (!targetPath) return
+
+    isLoadingStats.value = true
+    try {
+      const response = await axios.post('/api/dataset/stats', { path: targetPath })
+      // 更新当前数据集的缓存统计
+      if (currentDataset.value && currentDataset.value.path === targetPath) {
+        currentDataset.value.totalLatentCached = response.data.totalLatentCached
+        currentDataset.value.totalTextCached = response.data.totalTextCached
+      }
+      return response.data
+    } catch (error) {
+      console.error('Failed to fetch stats:', error)
+    } finally {
+      isLoadingStats.value = false
+    }
+  }
+
   async function loadCaption(imagePath: string) {
     try {
       const response = await axios.get(`/api/dataset/caption?path=${encodeURIComponent(imagePath)}`)
@@ -171,6 +194,9 @@ export const useDatasetStore = defineStore('dataset', () => {
     currentPage,
     pageSize,
     pagination,
+    // 缓存统计相关
+    isLoadingStats,
+    fetchStats,
     // 方法
     scanDataset,
     loadPage,
