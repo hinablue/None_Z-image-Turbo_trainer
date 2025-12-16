@@ -30,11 +30,13 @@ async def scan_dataset(request: DatasetScanRequest):
     """Scan a directory for images (极速模式)
     
     优化策略（参考图库网站最佳实践）：
-    1. 不调用 Image.open() - 尺寸设为 0
-    2. 不调用 glob()/exists() - 缓存状态设为 null
-    3. 只返回文件列表，< 500ms 响应
+    1. 使用 asyncio.to_thread 将文件遍历放到后台线程（不阻塞事件循环）
+    2. 不调用 Image.open() - 尺寸设为 0
+    3. 不调用 glob()/exists() - 缓存状态设为 null
     4. 缓存统计通过 /stats API 异步获取
     """
+    import asyncio
+    
     path = Path(request.path)
     page = max(1, request.page)
     page_size = min(500, max(10, request.page_size))
@@ -45,71 +47,76 @@ async def scan_dataset(request: DatasetScanRequest):
     if not path.is_dir():
         raise HTTPException(status_code=400, detail=f"Path is not a directory: {request.path}")
     
-    image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
-    
-    # 极速收集文件路径（只做文件系统遍历，不读取任何内容）
-    all_files = []
-    for file in path.rglob('*'):
-        if file.is_file() and file.suffix.lower() in image_extensions:
-            all_files.append(file)
-    
-    # 排序
-    all_files.sort(key=lambda f: f.name.lower())
-    
-    total_count = len(all_files)
-    total_pages = (total_count + page_size - 1) // page_size
-    
-    # 分页
-    start_idx = (page - 1) * page_size
-    end_idx = min(start_idx + page_size, total_count)
-    page_files = all_files[start_idx:end_idx]
-    
-    # 极速构建响应（不调用任何 IO 密集操作）
-    images = []
-    for file in page_files:
-        try:
-            stat = file.stat()
-            encoded_path = urllib.parse.quote(str(file), safe='')
-            images.append({
-                "path": str(file),
-                "filename": file.name,
-                "width": 0,  # 不读取尺寸
-                "height": 0,
-                "size": stat.st_size,
-                "caption": None,  # 不读取标注
-                "hasLatentCache": None,  # 不检查缓存，前端显示 loading
-                "hasTextCache": None,
-                "thumbnailUrl": f"/api/dataset/thumbnail?path={encoded_path}"
-            })
-        except Exception:
-            continue
-    
-    return {
-        "path": str(path),
-        "name": path.name,
-        "imageCount": total_count,
-        "totalSize": 0,  # 不计算总大小
-        "images": images,
-        # 缓存统计设为 null，通过 /stats API 异步获取
-        "totalLatentCached": None,
-        "totalTextCached": None,
-        "pagination": {
-            "page": page,
-            "pageSize": page_size,
-            "totalPages": total_pages,
-            "totalCount": total_count,
-            "hasNext": page < total_pages,
-            "hasPrev": page > 1
+    def _scan_files_sync():
+        """同步文件扫描（在线程池中执行）"""
+        image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
+        
+        # 收集文件路径
+        all_files = []
+        for file in path.rglob('*'):
+            if file.is_file() and file.suffix.lower() in image_extensions:
+                all_files.append(file)
+        
+        # 排序
+        all_files.sort(key=lambda f: f.name.lower())
+        
+        total_count = len(all_files)
+        total_pages = (total_count + page_size - 1) // page_size
+        
+        # 分页
+        start_idx = (page - 1) * page_size
+        end_idx = min(start_idx + page_size, total_count)
+        page_files = all_files[start_idx:end_idx]
+        
+        # 构建响应
+        images = []
+        for file in page_files:
+            try:
+                stat = file.stat()
+                encoded_path = urllib.parse.quote(str(file), safe='')
+                images.append({
+                    "path": str(file),
+                    "filename": file.name,
+                    "width": 0,
+                    "height": 0,
+                    "size": stat.st_size,
+                    "caption": None,
+                    "hasLatentCache": None,
+                    "hasTextCache": None,
+                    "thumbnailUrl": f"/api/dataset/thumbnail?path={encoded_path}"
+                })
+            except Exception:
+                continue
+        
+        return {
+            "path": str(path),
+            "name": path.name,
+            "imageCount": total_count,
+            "totalSize": 0,
+            "images": images,
+            "totalLatentCached": None,
+            "totalTextCached": None,
+            "pagination": {
+                "page": page,
+                "pageSize": page_size,
+                "totalPages": total_pages,
+                "totalCount": total_count,
+                "hasNext": page < total_pages,
+                "hasPrev": page > 1
+            }
         }
-    }
+    
+    # 在线程池中执行文件扫描，不阻塞事件循环
+    return await asyncio.to_thread(_scan_files_sync)
 
 
 @router.post("/stats")
 async def get_dataset_stats(request: DatasetScanRequest):
     """异步获取数据集缓存统计（耗时操作，独立 API）
     
-    此 API 可能需要几秒钟，前端应异步调用并显示 loading 状态。
+    此 API 使用 asyncio.to_thread 在后台线程执行，不阻塞事件循环。
     """
+    import asyncio
     from concurrent.futures import ThreadPoolExecutor
     
     path = Path(request.path)
@@ -117,45 +124,49 @@ async def get_dataset_stats(request: DatasetScanRequest):
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Path does not exist: {request.path}")
     
-    image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
+    def _compute_stats_sync():
+        """同步计算缓存统计（在线程池中执行）"""
+        image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
+        
+        # 收集所有图片文件
+        all_files = []
+        for file in path.rglob('*'):
+            if file.is_file() and file.suffix.lower() in image_extensions:
+                all_files.append(file)
+        
+        total_count = len(all_files)
+        
+        def check_cache(file: Path):
+            has_latent = any(
+                list(file.parent.glob(f"{file.stem}_*{suffix}"))[:1]
+                for suffix in ["_zi.safetensors", "_lc.safetensors"]
+            )
+            has_text = any(
+                (file.parent / f"{file.stem}{suffix}").exists()
+                for suffix in ALL_TEXT_SUFFIXES
+            )
+            return has_latent, has_text
+        
+        # 多线程并行检查
+        total_latent_cached = 0
+        total_text_cached = 0
+        
+        with ThreadPoolExecutor(max_workers=32) as executor:
+            results = executor.map(check_cache, all_files)
+            for has_latent, has_text in results:
+                if has_latent:
+                    total_latent_cached += 1
+                if has_text:
+                    total_text_cached += 1
+        
+        return {
+            "totalCount": total_count,
+            "totalLatentCached": total_latent_cached,
+            "totalTextCached": total_text_cached
+        }
     
-    # 收集所有图片文件
-    all_files = []
-    for file in path.rglob('*'):
-        if file.is_file() and file.suffix.lower() in image_extensions:
-            all_files.append(file)
-    
-    total_count = len(all_files)
-    
-    def check_cache(file: Path):
-        """检查单个文件的缓存状态"""
-        has_latent = any(
-            list(file.parent.glob(f"{file.stem}_*{suffix}"))[:1]
-            for suffix in ["_zi.safetensors", "_lc.safetensors"]
-        )
-        has_text = any(
-            (file.parent / f"{file.stem}{suffix}").exists()
-            for suffix in ALL_TEXT_SUFFIXES
-        )
-        return has_latent, has_text
-    
-    # 多线程并行检查
-    total_latent_cached = 0
-    total_text_cached = 0
-    
-    with ThreadPoolExecutor(max_workers=32) as executor:
-        results = executor.map(check_cache, all_files)
-        for has_latent, has_text in results:
-            if has_latent:
-                total_latent_cached += 1
-            if has_text:
-                total_text_cached += 1
-    
-    return {
-        "totalCount": total_count,
-        "totalLatentCached": total_latent_cached,
-        "totalTextCached": total_text_cached
-    }
+    # 在线程池中执行统计计算，不阻塞事件循环
+    return await asyncio.to_thread(_compute_stats_sync)
 
 @router.get("/list")
 async def list_datasets():
