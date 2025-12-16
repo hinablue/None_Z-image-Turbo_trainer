@@ -191,6 +191,9 @@ def parse_args():
 
         args.gradient_accumulation_steps = training_cfg.get("gradient_accumulation_steps",
                                             advanced_cfg.get("gradient_accumulation_steps", args.gradient_accumulation_steps))
+        
+        # Seed (从 [training] 或 [advanced] 读取)
+        args.seed = training_cfg.get("seed", advanced_cfg.get("seed", args.seed))
                                             
         if args.save_every_n_epochs is None:
             args.save_every_n_epochs = advanced_cfg.get("save_every_n_epochs", 1)
