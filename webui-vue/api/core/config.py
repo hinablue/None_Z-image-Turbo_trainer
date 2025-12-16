@@ -119,6 +119,8 @@ print("=" * 60)
 
 class DatasetScanRequest(BaseModel):
     path: str
+    page: int = 1  # 当前页码（从1开始）
+    page_size: int = 100  # 每页数量
 
 class CaptionRequest(BaseModel):
     path: str

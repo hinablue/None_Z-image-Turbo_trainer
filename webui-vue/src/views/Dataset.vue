@@ -194,13 +194,13 @@
     </div>
 
     <!-- 图片网格 -->
-    <div class="image-grid-container" v-if="datasetStore.currentImages.length > 0">
+    <div class="image-grid-container" v-if="pagination?.totalCount > 0 || datasetStore.currentImages.length > 0">
       <!-- 分页控制 - 顶部 -->
       <div class="pagination-top">
         <el-pagination
-          v-model:current-page="currentPage"
-          v-model:page-size="pageSize"
-          :total="datasetStore.currentImages.length"
+          :current-page="currentPage"
+          :page-size="pageSize"
+          :total="pagination?.totalCount || datasetStore.currentDataset?.imageCount || 0"
           :page-sizes="[50, 100, 200, 500]"
           layout="total, sizes, prev, pager, next, jumper"
           background
@@ -268,9 +268,9 @@
       <!-- 分页控制 - 底部 -->
       <div class="pagination-bottom">
         <el-pagination
-          v-model:current-page="currentPage"
-          v-model:page-size="pageSize"
-          :total="datasetStore.currentImages.length"
+          :current-page="currentPage"
+          :page-size="pageSize"
+          :total="pagination?.totalCount || datasetStore.currentDataset?.imageCount || 0"
           :page-sizes="[50, 100, 200, 500]"
           layout="total, sizes, prev, pager, next, jumper"
           background
@@ -835,27 +835,23 @@ const textCachedCount = computed(() => {
   return datasetStore.currentImages.filter(img => img.hasTextCache).length
 })
 
-// 分页状态
-const currentPage = ref(1)
-const pageSize = ref(100)
+// 分页状态（从 store 获取）
+const currentPage = computed(() => datasetStore.currentPage)
+const pageSize = computed(() => datasetStore.pageSize)
+const pagination = computed(() => datasetStore.pagination)
 
-// 分页后的图片列表
-const paginatedImages = computed(() => {
-  const start = (currentPage.value - 1) * pageSize.value
-  const end = start + pageSize.value
-  return datasetStore.currentImages.slice(start, end)
-})
+// 直接使用 store 的 currentImages（已经是当前页数据）
+const paginatedImages = computed(() => datasetStore.currentImages)
 
-// 分页事件处理
-function handlePageChange(page: number) {
-  currentPage.value = page
+// 分页事件处理（请求后端加载对应页）
+async function handlePageChange(page: number) {
+  await datasetStore.loadPage(page)
   // 滚动到顶部
   window.scrollTo({ top: 0, behavior: 'smooth' })
 }
 
-function handlePageSizeChange(size: number) {
-  pageSize.value = size
-  currentPage.value = 1  // 重置到第一页
+async function handlePageSizeChange(size: number) {
+  await datasetStore.changePageSize(size)
 }
 
 // 对话框状态

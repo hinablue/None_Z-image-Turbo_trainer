@@ -14,12 +14,22 @@ export interface DatasetImage {
   thumbnailUrl: string
 }
 
+export interface Pagination {
+  page: number
+  pageSize: number
+  totalPages: number
+  totalCount: number
+  hasNext: boolean
+  hasPrev: boolean
+}
+
 export interface DatasetInfo {
   path: string
   name: string
   imageCount: number
   totalSize: number
   images: DatasetImage[]
+  pagination?: Pagination
 }
 
 export const useDatasetStore = defineStore('dataset', () => {
@@ -27,14 +37,30 @@ export const useDatasetStore = defineStore('dataset', () => {
   const currentDataset = ref<DatasetInfo | null>(null)
   const isLoading = ref(false)
   const selectedImages = ref<Set<string>>(new Set())
+  
+  // 分页状态
+  const currentPage = ref(1)
+  const pageSize = ref(100)
+  const pagination = ref<Pagination | null>(null)
 
   const currentImages = computed(() => currentDataset.value?.images || [])
 
-  async function scanDataset(path: string) {
+  async function scanDataset(path: string, page: number = 1, size: number = 100) {
     isLoading.value = true
     try {
-      const response = await axios.post('/api/dataset/scan', { path })
+      const response = await axios.post('/api/dataset/scan', { 
+        path,
+        page,
+        page_size: size
+      })
       const datasetInfo: DatasetInfo = response.data
+      
+      // 保存分页信息
+      if (response.data.pagination) {
+        pagination.value = response.data.pagination
+        currentPage.value = response.data.pagination.page
+        pageSize.value = response.data.pagination.pageSize
+      }
       
       // 添加或更新数据集列表
       const existingIndex = datasets.value.findIndex(d => d.path === path)
@@ -51,6 +77,21 @@ export const useDatasetStore = defineStore('dataset', () => {
       throw error
     } finally {
       isLoading.value = false
+    }
+  }
+
+  // 加载指定页
+  async function loadPage(page: number) {
+    if (!currentDataset.value) return
+    return scanDataset(currentDataset.value.path, page, pageSize.value)
+  }
+
+  // 修改每页数量
+  async function changePageSize(size: number) {
+    pageSize.value = size
+    currentPage.value = 1
+    if (currentDataset.value) {
+      return scanDataset(currentDataset.value.path, 1, size)
     }
   }
 
@@ -123,7 +164,14 @@ export const useDatasetStore = defineStore('dataset', () => {
     currentImages,
     isLoading,
     selectedImages,
+    // 分页相关
+    currentPage,
+    pageSize,
+    pagination,
+    // 方法
     scanDataset,
+    loadPage,
+    changePageSize,
     loadCaption,
     saveCaption,
     generateCaptions,

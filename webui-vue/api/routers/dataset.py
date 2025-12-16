@@ -27,16 +27,18 @@ ALL_TEXT_SUFFIXES = ["_zi_te.safetensors", "_lc_te.safetensors"]
 
 @router.post("/scan")
 async def scan_dataset(request: DatasetScanRequest):
-    """Scan a directory for images (多线程并行，快速响应)
+    """Scan a directory for images (后端分页，快速响应)
     
     优化策略：
-    1. 使用 ThreadPoolExecutor 并行处理图片元数据
-    2. PIL 懒加载只读取头部获取尺寸
-    3. 多线程 IO 并行，4000 张图从 40s 降至 3-5s
+    1. 只处理当前页的图片（不处理全部）
+    2. 多线程并行处理当前页的图片元数据
+    3. 4000 张图首次加载 < 1 秒（只处理 100 张）
     """
     from concurrent.futures import ThreadPoolExecutor, as_completed
     
     path = Path(request.path)
+    page = max(1, request.page)
+    page_size = min(500, max(10, request.page_size))  # 限制 10-500
     
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"Path does not exist: {request.path}")
@@ -46,7 +48,7 @@ async def scan_dataset(request: DatasetScanRequest):
     
     image_extensions = {'.jpg', '.jpeg', '.png', '.webp', '.bmp', '.gif'}
     
-    # 第一步：快速收集所有图片路径（不读取内容）
+    # 第一步：快速收集所有图片路径（只收集路径，不读取内容）
     all_files = []
     for file in path.rglob('*'):
         if file.is_file() and file.suffix.lower() in image_extensions:
@@ -56,6 +58,12 @@ async def scan_dataset(request: DatasetScanRequest):
     all_files.sort(key=lambda f: f.name.lower())
     
     total_count = len(all_files)
+    total_pages = (total_count + page_size - 1) // page_size
+    
+    # 第二步：计算当前页的文件范围
+    start_idx = (page - 1) * page_size
+    end_idx = min(start_idx + page_size, total_count)
+    page_files = all_files[start_idx:end_idx]
     
     def process_single_image(file: Path) -> dict:
         """处理单张图片（在工作线程中执行）"""
@@ -108,28 +116,37 @@ async def scan_dataset(request: DatasetScanRequest):
             print(f"Error processing {file}: {e}")
             return None
     
-    # 第二步：多线程并行处理
+    # 第三步：只处理当前页的图片（多线程并行）
     images = []
-    total_size = 0
+    page_size_total = 0
     
-    # 使用线程池并行处理（max_workers=16 平衡性能和资源）
-    with ThreadPoolExecutor(max_workers=16) as executor:
-        futures = {executor.submit(process_single_image, f): f for f in all_files}
-        for future in as_completed(futures):
-            result = future.result()
-            if result:
-                images.append(result)
-                total_size += result["size"]
-    
-    # 按文件名排序（因为多线程返回顺序不确定）
-    images.sort(key=lambda x: x["filename"].lower())
+    if page_files:
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            futures = {executor.submit(process_single_image, f): f for f in page_files}
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    images.append(result)
+                    page_size_total += result["size"]
+        
+        # 按文件名排序
+        images.sort(key=lambda x: x["filename"].lower())
     
     return {
         "path": str(path),
         "name": path.name,
         "imageCount": total_count,
-        "totalSize": total_size,
-        "images": images
+        "totalSize": page_size_total,  # 当前页大小
+        "images": images,
+        # 分页信息
+        "pagination": {
+            "page": page,
+            "pageSize": page_size,
+            "totalPages": total_pages,
+            "totalCount": total_count,
+            "hasNext": page < total_pages,
+            "hasPrev": page > 1
+        }
     }
 
 @router.get("/list")
