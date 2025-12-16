@@ -70,7 +70,12 @@ class ConnectionManager:
             self.active_connections.discard(websocket)
     
     async def _broadcast_loop(self):
-        """后台广播循环 - 定时推送状态更新"""
+        """后台广播循环 - 定时推送状态更新
+        
+        重要改动：使用 ProcessOutputReader 从队列读取日志，
+        而不是直接读取进程 stdout。读取器线程独立运行，
+        即使 WebSocket 断开也继续读取，避免管道阻塞。
+        """
         while self._running:
             try:
                 # 收集所有状态
@@ -91,36 +96,67 @@ class ConnectionManager:
                     "generation": generation_status
                 })
                 
-                # 读取训练进程输出
-                if state.training_process and state.training_process.poll() is None:
-                    await self._read_process_output(
-                        state.training_process, "training_log", parse_training_progress
-                    )
+                # 从 ProcessOutputReader 队列读取训练日志
+                training_reader = state.get_process_reader("training")
+                if training_reader:
+                    await self._process_reader_output(training_reader, "training_log")
                 
-                # 读取下载进程输出
-                if state.download_process:
-                    await self._read_process_output(
-                        state.download_process, "download_log", parse_download_progress
-                    )
+                # 从 ProcessOutputReader 队列读取下载日志
+                download_reader = state.get_process_reader("download")
+                if download_reader:
+                    await self._process_reader_output(download_reader, "download_log")
                 
-                # 读取缓存进程输出
-                if state.cache_latent_process and state.cache_latent_process.poll() is None:
-                    await self._read_process_output(
-                        state.cache_latent_process, "cache_latent_log", parse_cache_progress
-                    )
+                # 从 ProcessOutputReader 队列读取缓存日志
+                cache_latent_reader = state.get_process_reader("cache_latent")
+                if cache_latent_reader:
+                    await self._process_reader_output(cache_latent_reader, "cache_latent_log")
                 
-                if state.cache_text_process and state.cache_text_process.poll() is None:
-                    await self._read_process_output(
-                        state.cache_text_process, "cache_text_log", parse_cache_progress
-                    )
+                cache_text_reader = state.get_process_reader("cache_text")
+                if cache_text_reader:
+                    await self._process_reader_output(cache_text_reader, "cache_text_log")
                 
-                await asyncio.sleep(0.2)  # 每 200ms 更新一次（加快日志响应）
+                await asyncio.sleep(0.2)  # 每 200ms 更新一次
                 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"Broadcast loop error: {e}")
                 await asyncio.sleep(1)
+    
+    async def _process_reader_output(self, reader, log_type: str):
+        """从 ProcessOutputReader 队列读取并广播日志"""
+        items = reader.get_lines(max_lines=20)
+        for item in items:
+            line = item.get("line", "")
+            progress = item.get("progress")
+            
+            if not line:
+                continue
+            
+            # 添加到日志
+            state.add_log(line, "info")
+            
+            # 更新训练历史
+            if log_type == "training_log" and progress:
+                self._update_training_history(progress)
+            
+            # 更新缓存进度
+            if log_type == "cache_latent_log" and progress:
+                self._update_cache_progress("latent", progress)
+            elif log_type == "cache_text_log" and progress:
+                self._update_cache_progress("text", progress)
+            
+            # 更新下载进度
+            if log_type == "download_log" and progress:
+                self._update_download_progress(progress)
+            
+            # 广播日志
+            await self.broadcast({
+                "type": log_type,
+                "timestamp": datetime.now().isoformat(),
+                "message": line,
+                "progress": progress
+            })
     
     async def _read_process_output(self, process, log_type: str, parse_func):
         """读取进程输出并广播（批量读取多行）"""

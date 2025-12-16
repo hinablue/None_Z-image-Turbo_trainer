@@ -201,12 +201,8 @@
             <span class="value">{{ currentConfig.training?.beta_lf ?? 0.2 }}</span>
           </div>
         </div>
-        <!-- 风格结构损失参数 -->
+        <!-- 风格学习参数 -->
         <div class="preview-grid-3" v-if="currentConfig.training?.enable_style">
-          <div class="preview-item">
-            <span class="label">λ Struct (结构)</span>
-            <span class="value">{{ currentConfig.training?.lambda_struct ?? 1.0 }}</span>
-          </div>
           <div class="preview-item">
             <span class="label">λ Light (光影)</span>
             <span class="value">{{ currentConfig.training?.lambda_light ?? 0.5 }}</span>
@@ -214,10 +210,6 @@
           <div class="preview-item">
             <span class="label">λ Color (色调)</span>
             <span class="value">{{ currentConfig.training?.lambda_color ?? 0.3 }}</span>
-          </div>
-          <div class="preview-item">
-            <span class="label">λ Tex (质感)</span>
-            <span class="value">{{ currentConfig.training?.lambda_tex ?? 0.5 }}</span>
           </div>
         </div>
       </div>

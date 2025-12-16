@@ -1,8 +1,128 @@
 import subprocess
-from typing import Optional, List, Any, Dict
+import threading
+import queue
+from typing import Optional, List, Any, Dict, Callable
 from fastapi import WebSocket
 from dataclasses import dataclass, field
 from enum import Enum
+
+
+class ProcessOutputReader:
+    """
+    进程输出读取器 - 使用独立线程持续读取进程 stdout
+    
+    解决问题：WebSocket 断开后管道缓冲区满导致训练进程 print() 阻塞
+    
+    设计：
+    - 独立线程持续读取 stdout，永不停止（直到进程结束）
+    - 使用有界队列存储日志，防止内存无限增长
+    - WebSocket 可读取队列中的日志进行广播
+    """
+    
+    def __init__(self, process: subprocess.Popen, name: str = "process", 
+                 max_queue_size: int = 1000, parse_func: Callable = None):
+        self.process = process
+        self.name = name
+        self.parse_func = parse_func
+        self.output_queue: queue.Queue = queue.Queue(maxsize=max_queue_size)
+        self.running = True
+        self.thread = threading.Thread(target=self._read_loop, daemon=True, name=f"reader-{name}")
+        self.thread.start()
+        print(f"[ProcessOutputReader] Started reader thread for {name}")
+    
+    def _read_loop(self):
+        """独立线程：持续读取 stdout，永不阻塞主线程"""
+        try:
+            if not self.process or not self.process.stdout:
+                return
+            
+            for line in iter(self.process.stdout.readline, ''):
+                if not self.running:
+                    break
+                if not line:
+                    continue
+                
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # 解析进度信息
+                progress = None
+                if self.parse_func:
+                    try:
+                        progress = self.parse_func(line)
+                    except:
+                        pass
+                
+                # 放入队列
+                item = {"line": line, "progress": progress}
+                try:
+                    self.output_queue.put_nowait(item)
+                except queue.Full:
+                    # 队列满时丢弃最旧的日志
+                    try:
+                        self.output_queue.get_nowait()
+                        self.output_queue.put_nowait(item)
+                    except:
+                        pass
+            
+            print(f"[ProcessOutputReader] Reader thread for {self.name} finished (process ended)")
+        except Exception as e:
+            print(f"[ProcessOutputReader] Error in reader thread for {self.name}: {e}")
+        finally:
+            self.running = False
+    
+    def get_lines(self, max_lines: int = 50) -> List[Dict[str, Any]]:
+        """获取队列中的日志行（非阻塞）"""
+        lines = []
+        while len(lines) < max_lines:
+            try:
+                lines.append(self.output_queue.get_nowait())
+            except queue.Empty:
+                break
+        return lines
+    
+    def stop(self):
+        """停止读取线程"""
+        self.running = False
+        print(f"[ProcessOutputReader] Stopping reader thread for {self.name}")
+    
+    def is_alive(self) -> bool:
+        """检查读取线程是否存活"""
+        return self.thread.is_alive()
+
+
+# 全局进程读取器管理
+_process_readers: Dict[str, ProcessOutputReader] = {}
+
+def start_process_reader(process: subprocess.Popen, name: str, parse_func: Callable = None) -> ProcessOutputReader:
+    """启动进程输出读取器"""
+    global _process_readers
+    
+    # 如果已存在同名读取器，先停止
+    if name in _process_readers:
+        _process_readers[name].stop()
+    
+    reader = ProcessOutputReader(process, name, parse_func=parse_func)
+    _process_readers[name] = reader
+    return reader
+
+def get_process_reader(name: str) -> Optional[ProcessOutputReader]:
+    """获取进程读取器"""
+    return _process_readers.get(name)
+
+def stop_process_reader(name: str):
+    """停止进程读取器"""
+    if name in _process_readers:
+        _process_readers[name].stop()
+        del _process_readers[name]
+
+def stop_all_readers():
+    """停止所有读取器"""
+    for name in list(_process_readers.keys()):
+        stop_process_reader(name)
+
+
 
 class ProcessType(Enum):
     TRAINING = "training"

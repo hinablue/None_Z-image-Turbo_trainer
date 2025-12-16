@@ -714,9 +714,9 @@ def main():
                         
                 loss_components['L2'] = l2_loss_val
                 
-                # === SNR 加权策略 ===
-                # 只对锚点流损失 (L1+Cosine+Freq+Style) 应用 SNR 加权
-                # 自由流 L2 不加权，符合 Flow Matching 原则（全域均匀学习）
+                # === SNR 加权策略 (v2 协作架构) ===
+                # 对锚点流损失 (L1+Freq+Style) 和自由流 L2 统一应用 SNR 加权
+                # 这确保了高噪区不会被 L2 主导，锚点约束保持有效
                 
                 snr_weights = compute_snr_weights(
                     timesteps=timesteps,  # 锚点流的 timesteps
@@ -726,13 +726,15 @@ def main():
                     prediction_type="v_prediction",
                 )
                 snr_weights = snr_weights.to(device=loss.device, dtype=weight_dtype)
+                snr_mean = snr_weights.mean()
                 
                 # 锚点流损失加权
-                anchor_loss_weighted = loss * snr_weights.mean()
+                anchor_loss_weighted = loss * snr_mean
                 
-                # 自由流 L2 不加权，直接加到总损失
+                # 自由流 L2 也加权（修复：防止高噪区 L2 主导）
                 if l2_loss_val > 0:
-                    loss = anchor_loss_weighted + current_l2_ratio * l2_loss
+                    l2_weighted = l2_loss * snr_mean
+                    loss = anchor_loss_weighted + current_l2_ratio * l2_weighted
                 else:
                     loss = anchor_loss_weighted
                 

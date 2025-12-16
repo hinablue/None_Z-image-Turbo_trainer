@@ -55,18 +55,16 @@ def get_default_config():
             # 基础损失权重
             "lambda_l1": 1.0,
             "lambda_cosine": 0.1,
-            # 频域感知 (开关+权重+子参数)
+            # 频域增强 (开关+权重+子参数)
             "enable_freq": False,
             "lambda_freq": 0.3,
             "alpha_hf": 1.0,
             "beta_lf": 0.2,
-            # 风格结构 (开关+权重+子参数)
+            # 风格学习 (开关+权重+子参数)
             "enable_style": False,
             "lambda_style": 0.3,
-            "lambda_struct": 1.0,
             "lambda_light": 0.5,
             "lambda_color": 0.3,
-            "lambda_tex": 0.5,
             # 兼容旧参数
             "lambda_fft": 0
         },
@@ -491,6 +489,14 @@ async def start_training(config: Dict[str, Any]):
             creationflags=_get_subprocess_flags()
         )
         
+        # 创建进程输出读取器（独立线程持续读取，防止管道阻塞）
+        from routers.websocket import parse_training_progress
+        state.start_process_reader(
+            state.training_process, 
+            "training", 
+            parse_func=parse_training_progress
+        )
+        
         model_name = {"zimage": "Z-Image", "longcat": "LongCat-Image", "flux": "FLUX"}.get(model_type, model_type)
         state.add_log(f"{model_name} 训练进程已启动 (PID: {state.training_process.pid})", "success")
         
@@ -602,18 +608,16 @@ def generate_training_toml_config(config: Dict[str, Any], model_type: str = "zim
         # 基础损失权重
         f"lambda_l1 = {config.get('training', {}).get('lambda_l1', 1.0)}",
         f"lambda_cosine = {config.get('training', {}).get('lambda_cosine', 0.1)}",
-        # 频域感知损失 (开关+权重+子参数)
+        # 频域增强 (开关+权重+子参数)
         f"enable_freq = {'true' if config.get('training', {}).get('enable_freq', False) else 'false'}",
         f"lambda_freq = {config.get('training', {}).get('lambda_freq', 0.3)}",
         f"alpha_hf = {config.get('training', {}).get('alpha_hf', 1.0)}",
         f"beta_lf = {config.get('training', {}).get('beta_lf', 0.2)}",
-        # 风格结构损失 (开关+权重+子参数)
+        # 风格学习 (开关+权重+子参数)
         f"enable_style = {'true' if config.get('training', {}).get('enable_style', False) else 'false'}",
         f"lambda_style = {config.get('training', {}).get('lambda_style', 0.3)}",
-        f"lambda_struct = {config.get('training', {}).get('lambda_struct', 1.0)}",
         f"lambda_light = {config.get('training', {}).get('lambda_light', 0.5)}",
         f"lambda_color = {config.get('training', {}).get('lambda_color', 0.3)}",
-        f"lambda_tex = {config.get('training', {}).get('lambda_tex', 0.5)}",
         f"num_train_epochs = {config.get('advanced', {}).get('num_train_epochs', 10)}",
         f"gradient_accumulation_steps = {config.get('advanced', {}).get('gradient_accumulation_steps', 4)}",
         f'mixed_precision = "{config.get("advanced", {}).get("mixed_precision", "bf16")}"',
@@ -715,6 +719,7 @@ async def stop_training():
                 pass
         
         state.training_process = None
+        state.stop_process_reader("training")  # 停止读取器线程
         state.add_log("训练已停止，进程树已清理", "warning")
         
         # 清理 Python 端的缓存

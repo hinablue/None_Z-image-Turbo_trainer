@@ -338,7 +338,13 @@ class LatentStyleStructureLoss(StyleStructureLoss):
         return_components: bool = False,
     ) -> torch.Tensor | Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        在 Latent 空间计算风格结构损失
+        在 Latent 空间计算风格统计损失 (v2 协作架构)
+        
+        职责分工：
+        - loss_light: 光影统计量 (L 通道 moments)
+        - loss_color: 色调统计量 (ab 通道 moments)
+        
+        注意：不再包含 loss_base/loss_struct/loss_tex，由主 L1 和 FreqLoss 负责
         
         Args:
             pred_v: 模型预测的速度 v (B, C, H, W)
@@ -354,9 +360,6 @@ class LatentStyleStructureLoss(StyleStructureLoss):
         target_v_fp32 = target_v.float()
         noisy_latents_fp32 = noisy_latents.float()
         
-        # 基础 loss
-        loss_base = F.mse_loss(pred_v_fp32, target_v_fp32)
-        
         # 计算 sigma
         sigmas = timesteps.float() / num_train_timesteps
         sigma_broadcast = sigmas.view(-1, 1, 1, 1)
@@ -366,52 +369,28 @@ class LatentStyleStructureLoss(StyleStructureLoss):
         target_x0 = noisy_latents_fp32 - sigma_broadcast * target_v_fp32
         
         # 在 Latent 空间近似计算
-        # Channel 0 近似亮度，Channel 1-3 近似色彩
+        # Channel 0 近似亮度 (L)，Channel 1-3 近似色彩 (ab)
         pred_L = pred_x0[:, 0:1]
         target_L = target_x0[:, 0:1]
-        pred_color = pred_x0[:, 1:4]
-        target_color = target_x0[:, 1:4]
+        pred_color = pred_x0[:, 1:4] if pred_x0.shape[1] > 1 else pred_x0
+        target_color = target_x0[:, 1:4] if target_x0.shape[1] > 1 else target_x0
         
-        # 1. 结构锁 (Latent 空间 SSIM 近似)
-        # 使用余弦相似度近似结构一致性
-        pred_L_flat = pred_L.view(pred_L.shape[0], -1)
-        target_L_flat = target_L.view(target_L.shape[0], -1)
-        cos_sim = F.cosine_similarity(pred_L_flat, target_L_flat, dim=1).mean()
-        loss_struct = 1.0 - cos_sim
-        
-        # 2. 光影学习 (Channel 0 统计量)
+        # 1. 光影学习 (Channel 0 统计量)
         loss_light = self.moments_loss(pred_L, target_L)
         
-        # 3. 色调迁移 (Channel 1-3 统计量)
+        # 2. 色调迁移 (Channel 1-3 统计量)
         loss_color = self.moments_loss(pred_color, target_color)
         
-        # 4. 质感增强 (Channel 0 高频)
-        pred_low = self.get_low_freq_latent(pred_L)
-        target_low = self.get_low_freq_latent(target_L)
-        pred_high = pred_L - pred_low
-        target_high = target_L - target_low
-        loss_tex = F.l1_loss(pred_high, target_high)
-        
-        # 总损失（在 float32 下计算，然后转回原始 dtype）
-        total_loss = (
-            self.lambda_base * loss_base +
-            self.lambda_struct * loss_struct +
-            self.lambda_light * loss_light +
-            self.lambda_color * loss_color +
-            self.lambda_tex * loss_tex
-        )
+        # 总损失 (纯统计量匹配，无基础项和频域项)
+        total_loss = self.lambda_light * loss_light + self.lambda_color * loss_color
         
         # 转换回原始 dtype
         total_loss = total_loss.to(original_dtype)
         
         if return_components:
             components = {
-                "loss_base": loss_base.to(original_dtype),
-                "loss_struct": loss_struct.to(original_dtype),
                 "loss_light": loss_light.to(original_dtype),
                 "loss_color": loss_color.to(original_dtype),
-                "loss_tex": loss_tex.to(original_dtype),
-                "cos_sim": cos_sim.to(original_dtype),
                 "total_loss": total_loss,
             }
             return total_loss, components

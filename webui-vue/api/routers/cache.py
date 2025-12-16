@@ -81,6 +81,9 @@ def _start_text_cache_after_latent():
             bufsize=1,
             creationflags=_get_subprocess_flags()
         )
+        # 创建进程输出读取器
+        from routers.websocket import parse_cache_progress
+        state.start_process_reader(state.cache_text_process, "cache_text", parse_func=parse_cache_progress)
         state.add_log(f"Text cache started (PID: {state.cache_text_process.pid})", "info")
 
 @router.post("/generate")
@@ -152,6 +155,9 @@ async def generate_cache(request: CacheGenerationRequest):
             bufsize=1,
             creationflags=_get_subprocess_flags()
         )
+        # 创建进程输出读取器
+        from routers.websocket import parse_cache_progress
+        state.start_process_reader(state.cache_latent_process, "cache_latent", parse_func=parse_cache_progress)
         state.add_log(f"Latent cache started (PID: {state.cache_latent_process.pid})", "info")
         started_tasks.append("latent")
     
@@ -208,6 +214,9 @@ async def generate_cache(request: CacheGenerationRequest):
                 bufsize=1,
                 creationflags=_get_subprocess_flags()
             )
+            # 创建进程输出读取器
+            from routers.websocket import parse_cache_progress
+            state.start_process_reader(state.cache_text_process, "cache_text", parse_func=parse_cache_progress)
             state.add_log(f"Text cache started (PID: {state.cache_text_process.pid})", "info")
             started_tasks.append("text")
     
@@ -235,6 +244,7 @@ async def stop_cache():
             state.cache_latent_process.kill()
             state.cache_latent_process.wait(timeout=5)
         state.cache_latent_process = None
+        state.stop_process_reader("cache_latent")  # 停止读取器
         stopped.append("latent")
         state.add_log(f"Latent cache stopped (PID: {pid})", "warning")
     
@@ -247,6 +257,7 @@ async def stop_cache():
             state.cache_text_process.kill()
             state.cache_text_process.wait(timeout=5)
         state.cache_text_process = None
+        state.stop_process_reader("cache_text")  # 停止读取器
         stopped.append("text")
         state.add_log(f"Text cache stopped (PID: {pid})", "warning")
     

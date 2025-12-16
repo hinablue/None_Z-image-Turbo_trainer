@@ -374,6 +374,10 @@ async def download_model(request: Optional[ModelOpsRequest] = None, model_type: 
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
         
+        # 创建进程输出读取器
+        from routers.websocket import parse_download_progress
+        state.start_process_reader(state.download_process, "download", parse_func=parse_download_progress)
+        
         return {
             "success": True, 
             "message": f"{spec.name} 下载已启动",

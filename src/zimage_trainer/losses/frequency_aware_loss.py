@@ -38,20 +38,18 @@ class FrequencyAwareLoss(nn.Module):
         self,
         alpha_hf: float = 1.0,      # 高频增强权重
         beta_lf: float = 0.2,       # 低频锁定权重
-        base_weight: float = 1.0,   # 基础 loss 权重
         downsample_factor: int = 4, # 低频提取的降采样因子
-        use_laplacian: bool = False, # 是否使用拉普拉斯金字塔（更精确但更慢）
-        lf_magnitude_weight: float = 0.0,  # 低频幅度约束（防止发灰）
+        # 向后兼容：接受但忽略的旧参数
+        base_weight: float = 1.0,   # [已废弃] 由主 L1 Loss 覆盖
+        lf_magnitude_weight: float = 0.0,  # [已废弃] 由 StyleLoss.moments 覆盖
+        use_laplacian: bool = False, # [保留] 未来可用
     ):
         super().__init__()
         self.alpha_hf = alpha_hf
         self.beta_lf = beta_lf
-        self.base_weight = base_weight
         self.downsample_factor = downsample_factor
-        self.use_laplacian = use_laplacian
-        self.lf_magnitude_weight = lf_magnitude_weight
         
-        logger.info(f"[FreqLoss] 初始化频域感知损失")
+        logger.info(f"[FreqLoss] 初始化频域感知损失 (v2 协作架构)")
         logger.info(f"  高频权重 (alpha_hf): {alpha_hf}")
         logger.info(f"  低频权重 (beta_lf): {beta_lf}")
         logger.info(f"  降采样因子: {downsample_factor}")
@@ -87,30 +85,6 @@ class FrequencyAwareLoss(nn.Module):
             x_low = self.get_low_freq(x)
         return x - x_low
     
-    def reconstruct_x0_from_v(
-        self,
-        v_pred: torch.Tensor,
-        noisy_latents: torch.Tensor,
-        sigmas: torch.Tensor,
-    ) -> torch.Tensor:
-        """
-        从 v-prediction 反推 x̂₀
-        
-        Z-Image 公式：
-        x_t = (1 - σ) * x_0 + σ * noise
-        v = noise - x_0
-        
-        反推：
-        x_0 = x_t - σ * v
-        """
-        # 扩展 sigma 维度以匹配 latents
-        sigma_broadcast = sigmas.view(-1, 1, 1, 1)
-        
-        # 反推 x0
-        pred_x0 = noisy_latents - sigma_broadcast * v_pred
-        
-        return pred_x0
-    
     def forward(
         self,
         pred_v: torch.Tensor,
@@ -121,7 +95,13 @@ class FrequencyAwareLoss(nn.Module):
         return_components: bool = False,
     ) -> torch.Tensor | Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """
-        计算频域感知损失
+        计算频域感知损失 (v2 协作架构)
+        
+        职责分工：
+        - 高频 (alpha_hf): L1 Loss 增强纹理/边缘细节
+        - 低频 (beta_lf): Cosine Loss 锁定结构/光影方向
+        
+        注意：不再包含 base_loss，由主训练循环的 L1 Loss 负责
         
         Args:
             pred_v: 模型预测的速度 v (B, C, H, W)
@@ -132,7 +112,7 @@ class FrequencyAwareLoss(nn.Module):
             return_components: 是否返回各分量 loss
             
         Returns:
-            total_loss: 总损失
+            total_loss: 总损失 (alpha_hf * loss_hf + beta_lf * loss_lf)
             components (optional): 各分量 loss 字典
         """
         # 保存原始 dtype，确保所有计算结果都转换回来
@@ -143,60 +123,41 @@ class FrequencyAwareLoss(nn.Module):
         target_v_fp32 = target_v.float()
         noisy_latents_fp32 = noisy_latents.float()
         
-        # 1. 基础 Loss（保证模型不崩）
-        base_loss = F.mse_loss(pred_v_fp32, target_v_fp32, reduction="mean")
-        
-        # 2. 计算 sigma（Z-Image: sigma = timestep / 1000）
+        # 1. 计算 sigma（Z-Image: sigma = timestep / 1000）
         sigmas = timesteps.float() / num_train_timesteps
         
-        # 3. 反推 x0（在干净 latent 空间做频域分析）
+        # 2. 反推 x0（在干净 latent 空间做频域分析）
         sigma_broadcast = sigmas.view(-1, 1, 1, 1)
         pred_x0 = noisy_latents_fp32 - sigma_broadcast * pred_v_fp32
         target_x0 = noisy_latents_fp32 - sigma_broadcast * target_v_fp32
         
-        # 4. 频域分离
+        # 3. 频域分离
         pred_low = self.get_low_freq(pred_x0)
         pred_high = pred_x0 - pred_low
         
         target_low = self.get_low_freq(target_x0)
         target_high = target_x0 - target_low
         
-        # 5. 高频 Loss：L1（保持边缘锐利）
+        # 4. 高频 Loss：L1（保持边缘锐利）
         loss_hf = F.l1_loss(pred_high, target_high, reduction="mean")
         
-        # 6. 低频 Loss：Cosine Similarity（锁定方向）
+        # 5. 低频 Loss：Cosine Similarity（锁定方向，不约束幅度）
         pred_low_flat = pred_low.view(pred_low.shape[0], -1)
         target_low_flat = target_low.view(target_low.shape[0], -1)
         
         cos_sim = F.cosine_similarity(pred_low_flat, target_low_flat, dim=1)
-        loss_lf_direction = (1.0 - cos_sim).mean()
+        loss_lf = (1.0 - cos_sim).mean()
         
-        # 可选：低频幅度约束（防止发灰）
-        loss_lf_magnitude = torch.zeros(1, device=pred_v.device, dtype=torch.float32).squeeze()
-        if self.lf_magnitude_weight > 0:
-            pred_norm = pred_low_flat.norm(dim=1)
-            target_norm = target_low_flat.norm(dim=1)
-            loss_lf_magnitude = F.mse_loss(pred_norm, target_norm)
-        
-        loss_lf = loss_lf_direction + self.lf_magnitude_weight * loss_lf_magnitude
-        
-        # 7. 总 Loss（在 float32 下计算，然后转回原始 dtype）
-        total_loss = (
-            self.base_weight * base_loss +
-            self.alpha_hf * loss_hf +
-            self.beta_lf * loss_lf
-        )
+        # 6. 总 Loss（纯频域分离，无基础项）
+        total_loss = self.alpha_hf * loss_hf + self.beta_lf * loss_lf
         
         # 转换回原始 dtype
         total_loss = total_loss.to(original_dtype)
         
         if return_components:
             components = {
-                "base_loss": base_loss.to(original_dtype),
                 "loss_hf": loss_hf.to(original_dtype),
                 "loss_lf": loss_lf.to(original_dtype),
-                "loss_lf_direction": loss_lf_direction.to(original_dtype),
-                "loss_lf_magnitude": loss_lf_magnitude.to(original_dtype),
                 "total_loss": total_loss,
             }
             return total_loss, components
