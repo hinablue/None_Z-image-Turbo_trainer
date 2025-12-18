@@ -52,7 +52,32 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 
+### Step 2: Install Flash Attention (Recommended)
 
+Flash Attention significantly reduces VRAM usage and speeds up training.
+
+**Linux** - Download from [Flash Attention Releases](https://github.com/Dao-AILab/flash-attention/releases):
+
+```bash
+# Check your environment versions
+python --version                                      # e.g.: Python 3.12
+python -c "import torch; print(torch.version.cuda)"  # e.g.: 12.8
+
+# Download matching version (example: Python 3.12 + CUDA 12 + PyTorch 2.5)
+wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.3/flash_attn-2.7.3+cu12torch2.5cxx11abiFALSE-cp312-cp312-linux_x86_64.whl
+
+# Install
+pip install flash_attn-*.whl
+```
+
+**Windows** - Download prebuilt from [AI-windows-whl](https://huggingface.co/Wildminder/AI-windows-whl/tree/main):
+
+```batch
+:: Example: Python 3.12 + CUDA 12.8 + PyTorch 2.9.1
+pip install https://huggingface.co/Wildminder/AI-windows-whl/resolve/main/flash_attn-2.8.3+cu128torch2.9.1cxx11abiTRUE-cp313-cp313-win_amd64.whl
+```
+
+> **Tip**: If no matching version exists, skip this step. The program will automatically use SDPA as fallback.
 
 ### Step 3: Install Diffusers (Required)
 
@@ -360,6 +385,7 @@ A: Normal! Different sigma values have different prediction difficulty. Watch if
 A: Try these methods:
 - Increase `gradient_accumulation_steps` (e.g., 4 → 8)
 - Reduce `network_dim` (e.g., 32 → 16)
+- Ensure Flash Attention is installed
 
 </details>
 
@@ -390,6 +416,7 @@ Apache 2.0
 
 - [Z-Image](https://github.com/Alpha-VLLM/Lumina-Image) - Base model
 - [diffusers](https://github.com/huggingface/diffusers) - Training framework
+- [Flash Attention](https://github.com/Dao-AILab/flash-attention) - Efficient attention
   
 ---
 

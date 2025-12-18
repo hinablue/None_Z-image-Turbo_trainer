@@ -52,7 +52,35 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 
+### Step 2: 安装 Flash Attention（推荐）
 
+Flash Attention 可显著降低显存占用并加速训练。
+
+**Linux** - 从 [Flash Attention Releases](https://github.com/Dao-AILab/flash-attention/releases) 下载：
+
+```bash
+# 查看你的环境版本
+python --version                                      # 例如: Python 3.12
+python -c "import torch; print(torch.version.cuda)"  # 例如: 12.8
+
+# 下载对应版本（示例：Python 3.12 + CUDA 12 + PyTorch 2.5）
+wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.3/flash_attn-2.7.3+cu12torch2.5cxx11abiFALSE-cp312-cp312-linux_x86_64.whl
+
+# 安装
+pip install flash_attn-*.whl
+```
+
+**Windows** - 从 [AI-windows-whl](https://huggingface.co/Wildminder/AI-windows-whl/tree/main) 下载预编译版：
+
+```batch
+:: 示例：Python 3.12 + CUDA 12.8 + PyTorch 2.9.1
+pip install https://huggingface.co/Wildminder/AI-windows-whl/resolve/main/flash_attn-2.8.3+cu128torch2.9.1cxx11abiTRUE-cp313-cp313-win_amd64.whl
+
+:: 或下载后本地安装
+pip install flash_attn-xxx.whl
+```
+
+> **提示**: 如果没有对应版本，可跳过此步，程序会自动使用 SDPA 作为备选。
 
 ### Step 3: 安装 Diffusers（必须）
 
@@ -446,6 +474,7 @@ Apache 2.0
 
 - [Z-Image](https://github.com/Alpha-VLLM/Lumina-Image) - 基础模型
 - [diffusers](https://github.com/huggingface/diffusers) - 训练框架
+- [Flash Attention](https://github.com/Dao-AILab/flash-attention) - 高效注意力
   
 ---
 
