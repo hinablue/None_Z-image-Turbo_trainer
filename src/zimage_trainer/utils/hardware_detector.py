@@ -5,7 +5,6 @@
 支持检测:
 - GPU 类型和显存
 - xformers 可用性
-- Flash Attention 支持
 - SDPA 支持
 """
 import torch
@@ -42,35 +41,47 @@ class HardwareDetector:
     def detect_gpu(self) -> Dict[str, Any]:
         """检测 GPU 信息"""
         gpu_info = {
-            "available": torch.cuda.is_available(),
-            "device_count": torch.cuda.device_count() if torch.cuda.is_available() else 0,
+            "available": False,
+            "device_count": 0,
             "device_name": "CPU",
             "compute_capability": None,
             "memory_total": 0,
             "memory_free": 0,
-            "gpu_tier": "unknown"
+            "gpu_tier": "unknown",
+            "is_mps": False
         }
-        
-        if not torch.cuda.is_available():
-            logger.info("[INFO] No CUDA GPU detected, will use CPU training")
-            return gpu_info
+
+        if torch.cuda.is_available():
+            gpu_info["available"] = True
+            gpu_info["device_count"] = torch.cuda.device_count()
+            gpu_info["device_name"] = torch.cuda.get_device_name(0)
+            gpu_info["memory_total"] = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+            gpu_info["compute_capability"] = torch.cuda.get_device_properties(0).major, torch.cuda.get_device_properties(0).minor
+            gpu_info["memory_free"] = gpu_info["memory_total"] - torch.cuda.memory_allocated() / (1024**3)
+            gpu_info["gpu_tier"] = self._classify_gpu_tier(gpu_info["device_name"], gpu_info["memory_total"])
             
-        # 获取主 GPU 信息
-        gpu_info["device_name"] = torch.cuda.get_device_name(0)
-        gpu_info["memory_total"] = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
-        gpu_info["compute_capability"] = torch.cuda.get_device_properties(0).major
-        gpu_info["compute_capability"] = (gpu_info["compute_capability"], torch.cuda.get_device_properties(0).minor)
+            logger.info(f"🖥️ 检测到 CUDA GPU: {gpu_info['device_name']}")
+            logger.info(f"[VRAM] GPU Memory: {gpu_info['memory_total']:.1f}GB (Free: {gpu_info['memory_free']:.1f}GB)")
+            logger.info(f"[TIER] GPU Tier: {gpu_info['gpu_tier']}")
+
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            gpu_info["available"] = True
+            gpu_info["device_count"] = 1
+            gpu_info["device_name"] = "Apple MPS"
+            gpu_info["is_mps"] = True
+            # MPS doesn't expose detailed memory/tier info, use system memory as a proxy
+            mem_info = self.detect_memory()
+            gpu_info["memory_total"] = mem_info.get("total", 0)
+            gpu_info["memory_free"] = mem_info.get("available", 0)
+            gpu_info["gpu_tier"] = self._classify_gpu_tier("Apple MPS", gpu_info["memory_total"])
+            
+            logger.info("🍏 检测到 Apple MPS")
+            logger.info(f"[Shared Memory] System Memory: {gpu_info['memory_total']:.1f}GB")
+            logger.info(f"[TIER] GPU Tier (based on shared memory): {gpu_info['gpu_tier']}")
         
-        # 计算可用内存
-        gpu_info["memory_free"] = gpu_info["memory_total"] - torch.cuda.memory_allocated() / (1024**3)
-        
-        # GPU 分级
-        gpu_info["gpu_tier"] = self._classify_gpu_tier(gpu_info["device_name"], gpu_info["memory_total"])
-        
-        logger.info(f"🖥️ 检测到 GPU: {gpu_info['device_name']}")
-        logger.info(f"[VRAM] GPU Memory: {gpu_info['memory_total']:.1f}GB (Free: {gpu_info['memory_free']:.1f}GB)")
-        logger.info(f"[TIER] GPU Tier: {gpu_info['gpu_tier']}")
-        
+        else:
+            logger.info("[INFO] No GPU detected, will use CPU training")
+
         return gpu_info
     
     def detect_cpu(self) -> Dict[str, Any]:
@@ -100,8 +111,6 @@ class HardwareDetector:
             "available": XFORMERS_AVAILABLE,
             "version": XFORMERS_VERSION,
             "memory_efficient_attention": False,
-            "flash_attention": False,
-            "cutlass": False,
         }
         
         if not XFORMERS_AVAILABLE:
@@ -111,17 +120,7 @@ class HardwareDetector:
         try:
             info["memory_efficient_attention"] = hasattr(xops, "memory_efficient_attention")
             
-            if hasattr(xops, "MemoryEfficientAttentionFlashAttentionOp"):
-                info["flash_attention"] = True
-            
-            if hasattr(xops, "MemoryEfficientAttentionCutlassOp"):
-                info["cutlass"] = True
-            
             logger.info(f"[OK] xformers {XFORMERS_VERSION} available")
-            if info["flash_attention"]:
-                logger.info("   [OK] Flash Attention supported")
-            if info["cutlass"]:
-                logger.info("   [OK] CUTLASS supported")
                 
         except Exception as e:
             logger.warning(f"xformers 功能检测失败: {e}")
@@ -133,7 +132,6 @@ class HardwareDetector:
         backends = {
             "torch_sdpa": False,
             "xformers": XFORMERS_AVAILABLE,
-            "flash_attention_2": False,
             "recommended": "torch",
         }
         
@@ -144,23 +142,17 @@ class HardwareDetector:
         except Exception:
             pass
         
-        # 检查 Flash Attention 2
-        try:
-            import flash_attn
-            backends["flash_attention_2"] = True
-        except ImportError:
-            pass
-        
         # 推荐后端
-        if torch.cuda.is_available():
+        if self.gpu_info.get("is_mps"):
+            if backends["torch_sdpa"]:
+                backends["recommended"] = "torch_sdpa"
+        elif torch.cuda.is_available():
             cc = torch.cuda.get_device_capability()
             
             # SM80+ (A100, H100, RTX 30xx/40xx)
             if cc[0] >= 8:
-                if XFORMERS_AVAILABLE and self.xformers_info.get("flash_attention"):
+                if XFORMERS_AVAILABLE:
                     backends["recommended"] = "xformers"
-                elif backends["flash_attention_2"]:
-                    backends["recommended"] = "flash_attention_2"
                 elif backends["torch_sdpa"]:
                     backends["recommended"] = "torch_sdpa"
             # SM70+ (V100, T4, RTX 20xx)
@@ -178,15 +170,19 @@ class HardwareDetector:
     
     def _classify_gpu_tier(self, device_name: str, memory_total: float) -> str:
         """
-        基于显存的严格分级 (用户要求: 32G/24G/16G 分级，<16G 不支持)
-        
-        Args:
-            device_name: GPU 名称
-            memory_total: 显存大小 (GB)
-            
-        Returns:
-            str: 'tier_s', 'tier_a', 'tier_b', 'unsupported'
+        基于显存的严格分级
         """
+        # For MPS, device_name is "Apple MPS", memory is shared system memory
+        if "Apple" in device_name:
+            if memory_total >= 64:
+                return "tier_s" # M2/M3 Ultra
+            elif memory_total >= 32:
+                return "tier_a" # M2/M3 Max
+            elif memory_total >= 16:
+                return "tier_b" # M2/M3 Pro
+            else:
+                return "unsupported"
+
         # 门槛下调 1G，因为系统报告的显存略小于标称值 (如 24G 报告为 23.5G)
         if memory_total >= 31:
             return "tier_s"        # 32GB级 (A100/H100/Pro 6000/A6000/5090) - 全开
@@ -206,6 +202,18 @@ class HardwareDetector:
             
         memory_gb = self.gpu_info['memory_total']
         gpu_tier = self.gpu_info['gpu_tier']
+
+        if self.gpu_info.get("is_mps"):
+            logger.info(f"[CONFIG] Detected Apple MPS. Applying MPS-specific optimizations.")
+            return {
+                'mixed_precision': 'fp16',  # bfloat16 not well supported on MPS
+                'gradient_checkpointing': True,
+                'memory_efficient_preprocessing': True,
+                'sdpa_enabled': True, # Use PyTorch's SDPA
+                'attention_backend': 'torch_sdpa',
+                'dataloader_num_workers': 4,
+                'xformers_enabled': False,
+            }
         
         if gpu_tier == 'unsupported':
             logger.warning(f"[WARN] Detected VRAM ({memory_gb:.1f}GB) below minimum (16GB). Extreme mode enabled.")
@@ -245,14 +253,9 @@ class HardwareDetector:
         if gpu_tier == 'tier_s':
             # Tier S (32GB+: A100/H100/5090): 全性能模式
             optimized.update({
-                # ✅ Blocks Swap (用户可通过前端手动启用)
-                'blocks_to_swap': 0,  # 32G 显存充裕，默认不开启
-                
-                # ✅ 使用最高效的注意力后端
+                'blocks_to_swap': 0,
                 'sdpa_enabled': True,
-                'sdpa_flash_attention': True,
-                'attention_backend': 'sdpa',
-                
+                'attention_backend': self.attention_info.get("recommended", "torch_sdpa"),
                 'dataloader_num_workers': 16,
                 'xformers_enabled': self.xformers_info.get('available', False),
             })
@@ -260,48 +263,28 @@ class HardwareDetector:
         elif gpu_tier == 'tier_a':
             # Tier A (24GB级: 3090/4090): 高性能模式
             optimized.update({
-                # ✅ Blocks Swap (用户可通过前端手动设置)
-                'blocks_to_swap': 0,  # 24G 显存富裕，默认不开启
-                
-                # ✅ 使用 PyTorch 原生 SDPA
+                'blocks_to_swap': 0,
                 'sdpa_enabled': True,
-                'sdpa_flash_attention': True,
-                'attention_backend': 'sdpa',
-                
+                'attention_backend': self.attention_info.get("recommended", "torch_sdpa"),
                 'dataloader_num_workers': 8,
                 'xformers_enabled': self.xformers_info.get('available', False),
             })
             
         elif gpu_tier == 'tier_b':
             # Tier B (16GB级: 4080/4070TiS/P100): 内存优化模式
-            # 16GB 需要精细配置，建议使用 blocks_to_swap 降低显存峰值
             optimized.update({
-                # ✅ Block Swap - 16G 建议开启，默认 4 块
-                # 用户可在前端调整 0-8 块，越大越省显存但越慢
                 'blocks_to_swap': 4,
-                
-                # ✅ 使用原生 SDPA (内存效率最高)
                 'sdpa_enabled': True,
-                'sdpa_flash_attention': True,
-                'attention_backend': 'sdpa',
-                
-                # ✅ 强制启用梯度检查点 - 16GB 必须开启
+                'attention_backend': 'torch_sdpa', # Force SDPA for memory saving
                 'gradient_checkpointing': True,
-                
-                # ✅ 减少数据加载器线程数 - 节省 CPU 内存
                 'dataloader_num_workers': 2,
-                
-                # ✅ 增加梯度累积 - 减少单次显存峰值
                 'gradient_accumulation_steps': 4,
-                
                 'xformers_enabled': self.xformers_info.get('available', False),
             })
             
             # 16G 使用更保守的显存比例 (95%)
             optimized['max_memory_mb'] = int(memory_gb * 1024 * 0.95)
             
-        # 输出优化的配置
-        # 根据 tier 显示不同的模式描述
         mode_desc = {
             'tier_s': 'Full Performance (no compression)',
             'tier_a': 'High Performance (LoRA optimized)',
@@ -322,7 +305,8 @@ class HardwareDetector:
         logger.info("[Hardware Detection Report]")
         logger.info("=" * 60)
         logger.info(f"GPU: {self.gpu_info['device_name']}")
-        logger.info(f"VRAM: {self.gpu_info['memory_total']:.1f}GB")
+        if not self.gpu_info.get("is_mps"):
+            logger.info(f"VRAM: {self.gpu_info['memory_total']:.1f}GB")
         logger.info(f"GPU Tier: {self.gpu_info['gpu_tier']}")
         logger.info(f"CPU: {self.cpu_info['count']} cores")
         logger.info(f"System Memory: {self.memory_info['total']:.1f}GB")
@@ -332,6 +316,5 @@ class HardwareDetector:
         xf_status = f"[OK] {self.xformers_info.get('version', '')}" if self.xformers_info.get('available') else "[NO]"
         logger.info(f"  xformers: {xf_status}")
         logger.info(f"  PyTorch SDPA: {'[OK]' if self.attention_info.get('torch_sdpa') else '[NO]'}")
-        logger.info(f"  Flash Attention 2: {'[OK]' if self.attention_info.get('flash_attention_2') else '[NO]'}")
         logger.info(f"  Recommended: {self.attention_info.get('recommended', 'torch')}")
         logger.info("=" * 60)
