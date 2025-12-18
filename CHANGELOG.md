@@ -22,6 +22,8 @@
 
 ### 🐛 修復
 
+- **MPS dataloader 穩定性**:
+  - 在 `hardware_detector.py` 和 `hardware.py` 中，將 MPS 設備的 `dataloader_num_workers` 設置為 `0`，以解決在 Apple Silicon 上使用多進程數據加載時可能出現的穩定性問題。
 - **NaN 問題**:
   - 在 `style_structure_loss.py` 中，對 `ssim` 計算和 `StyleStructureLoss` 的 `forward` 方法強制使用 `float32` 精度，以避免在 `fp16` 混合精度訓練中因數值不穩定而導致的 `NaN` (Not a Number) 錯誤。
   - `frequency_aware_loss.py` 已經具備 `float32` 轉換，無需修改，但確認了其穩健性。
