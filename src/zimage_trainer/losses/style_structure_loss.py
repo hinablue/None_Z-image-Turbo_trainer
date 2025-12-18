@@ -90,6 +90,10 @@ def ssim(
         size_average: 是否取平均
         data_range: 数据范围
     """
+    original_dtype = x.dtype
+    x = x.float()
+    y = y.float()
+
     C1 = (0.01 * data_range) ** 2
     C2 = (0.03 * data_range) ** 2
     
@@ -122,8 +126,8 @@ def ssim(
                ((mu_x_sq + mu_y_sq + C1) * (sigma_x_sq + sigma_y_sq + C2))
     
     if size_average:
-        return ssim_map.mean()
-    return ssim_map
+        return ssim_map.mean().to(original_dtype)
+    return ssim_map.to(original_dtype)
 
 
 class StyleStructureLoss(nn.Module):
@@ -231,6 +235,12 @@ class StyleStructureLoss(nn.Module):
             pred_x0/target_x0 应该是 RGB 图像 (B, 3, H, W)，范围 [0, 1]
             如果输入是 latent，需要先通过 VAE decode 或近似转换
         """
+        original_dtype = pred_v.dtype
+        pred_v = pred_v.float()
+        target_v = target_v.float()
+        pred_x0 = pred_x0.float()
+        target_x0 = target_x0.float()
+
         # 基础 v-prediction loss
         loss_base = F.mse_loss(pred_v, target_v)
         
@@ -274,17 +284,17 @@ class StyleStructureLoss(nn.Module):
         
         if return_components:
             components = {
-                "loss_base": loss_base,
-                "loss_struct": loss_struct,
-                "loss_light": loss_light,
-                "loss_color": loss_color,
-                "loss_tex": loss_tex,
-                "ssim": ssim_val,
-                "total_loss": total_loss,
+                "loss_base": loss_base.to(original_dtype),
+                "loss_struct": loss_struct.to(original_dtype),
+                "loss_light": loss_light.to(original_dtype),
+                "loss_color": loss_color.to(original_dtype),
+                "loss_tex": loss_tex.to(original_dtype),
+                "ssim": ssim_val.to(original_dtype),
+                "total_loss": total_loss.to(original_dtype),
             }
-            return total_loss, components
+            return total_loss.to(original_dtype), components
         
-        return total_loss
+        return total_loss.to(original_dtype)
 
 
 class LatentStyleStructureLoss(StyleStructureLoss):
