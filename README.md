@@ -32,6 +32,16 @@
 
 ---
 
+> **macOS (Apple Silicon) 使用者請注意:**
+>
+> 當前 `mps` 分支提供了對 Apple M 系列晶片的實驗性支援。
+>
+> - **無需安裝 Flash Attention**: MPS 不支援 Flash Attention，系統會自動使用 PyTorch 原生的 `scaled_dot_product_attention` (SDPA) 作為替代。
+> - **效能**: 效能可能因您的晶片型號 (M1/M2/M3, Pro/Max/Ultra) 和 PyTorch 版本而異。
+> - **問題回報**: 如果遇到問題，歡迎在專案的 Issues 中回報。
+
+---
+
 ## 🚀 快速开始
 
 ### Step 1: 安装 PyTorch（必须）

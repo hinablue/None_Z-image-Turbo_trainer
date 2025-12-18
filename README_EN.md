@@ -32,6 +32,16 @@ Supports: **Z-Image Turbo** | **LongCat-Image**
 
 ---
 
+> **Note for macOS (Apple Silicon) Users:**
+>
+> The current `mps` branch provides experimental support for Apple's M-series chips.
+>
+> - **No Flash Attention Needed**: MPS does not support Flash Attention. The system will automatically fall back to PyTorch's native `scaled_dot_product_attention` (SDPA).
+> - **Performance**: Performance may vary depending on your chip model (M1/M2/M3, Pro/Max/Ultra) and PyTorch version.
+> - **Feedback**: If you encounter any issues, please report them in the project's Issues section.
+
+---
+
 ## 🚀 Quick Start
 
 ### Step 1: Install PyTorch (Required)
