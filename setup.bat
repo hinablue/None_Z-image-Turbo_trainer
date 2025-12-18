@@ -77,14 +77,7 @@ if errorlevel 1 (
 for /f "tokens=*" %%i in ('"%PYTHON_EXE%" -c "import torch; print(torch.__version__)"') do echo   PyTorch 已安装: %%i
 for /f "tokens=*" %%i in ('"%PYTHON_EXE%" -c "import torch; print(torch.version.cuda if torch.cuda.is_available() else 'CPU')"') do echo   CUDA 版本: %%i
 
-:: 检查 Flash Attention
-echo.
-"%PYTHON_EXE%" -c "import flash_attn; print(flash_attn.__version__)" 2>nul
-if errorlevel 1 (
-    echo   Flash Attention 未安装（可选，建议安装以提升性能）
-) else (
-    for /f "tokens=*" %%i in ('"%PYTHON_EXE%" -c "import flash_attn; print(flash_attn.__version__)"') do echo   Flash Attention 已安装: %%i
-)
+
 
 :: 安装依赖
 echo.
