@@ -93,14 +93,7 @@ else
     exit 1
 fi
 
-# 检查 Flash Attention
-echo ""
-if python3 -c "import flash_attn" 2>/dev/null; then
-    FLASH_VERSION=$(python3 -c "import flash_attn; print(flash_attn.__version__)")
-    echo -e "  ${GREEN}Flash Attention 已安装: $FLASH_VERSION${NC}"
-else
-    echo -e "  ${YELLOW}Flash Attention 未安装（可选，建议安装以提升性能）${NC}"
-fi
+
 
 # 安装依赖
 echo ""
