@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Z-Image Constants
 VAE_SCALE_FACTOR = 8  # Z-Image VAE uses 8x compression (verified: 1024/128 = 8)
+DEFAULT_DEVICE = "cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu"
 
 
 def pack_latents(latents: torch.Tensor) -> tuple[torch.Tensor, tuple[int, int]]:
@@ -203,7 +204,7 @@ def _convert_zimage_vae_keys(state_dict: dict) -> dict:
 
 def load_vae(
     vae_path: str, 
-    device: Union[str, torch.device] = "cpu", 
+    device: Union[str, torch.device] = DEFAULT_DEVICE, 
     disable_mmap: bool = False,
     dtype: torch.dtype = torch.float32,
 ):
@@ -249,7 +250,7 @@ def load_vae(
 
 def load_transformer(
     transformer_path: str,
-    device: Union[str, torch.device] = "cpu",
+    device: Union[str, torch.device] = DEFAULT_DEVICE,
     torch_dtype: Optional[torch.dtype] = None,
     attn_mode: str = "torch",
     split_attn: bool = False,
@@ -316,7 +317,7 @@ def load_transformer(
     return transformer
 
 
-def load_text_encoder_and_tokenizer(model_path: str, device: Union[str, torch.device] = "cpu"):
+def load_text_encoder_and_tokenizer(model_path: str, device: Union[str, torch.device] = DEFAULT_DEVICE):
     """
     Load text encoder and tokenizer.
     
@@ -331,9 +332,9 @@ def load_text_encoder_and_tokenizer(model_path: str, device: Union[str, torch.de
         ```python
         from musubi_tuner.zimage import load_text_encoder_and_tokenizer
         
+        # Automatically selects the best available device (cuda, mps, or cpu)
         text_encoder, tokenizer = load_text_encoder_and_tokenizer(
-            "Qwen/Qwen2.5-7B-Instruct",
-            device="cuda"
+            "Qwen/Qwen2.5-7B-Instruct"
         )
         ```
     """
@@ -401,7 +402,7 @@ class FlowMatchEulerScheduler:
     def set_timesteps(
         self,
         num_inference_steps: int,
-        device: Union[str, torch.device] = "cpu",
+        device: Union[str, torch.device] = DEFAULT_DEVICE,
         sigmas: Optional[List[float]] = None,
         mu: Optional[float] = None,
     ):
