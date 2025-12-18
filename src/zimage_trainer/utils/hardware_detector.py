@@ -211,7 +211,7 @@ class HardwareDetector:
                 'memory_efficient_preprocessing': True,
                 'sdpa_enabled': True, # Use PyTorch's SDPA
                 'attention_backend': 'torch_sdpa',
-                'dataloader_num_workers': 4,
+                'dataloader_num_workers': 0, # Set to 0 for MPS stability
                 'xformers_enabled': False,
             }
         
