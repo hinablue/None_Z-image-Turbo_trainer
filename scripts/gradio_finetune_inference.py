@@ -242,7 +242,7 @@ def scan_finetune_models(directory: str):
 # ============================================================
 
 def create_ui():
-    with gr.Blocks(title="Z-Image Finetune Inference", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="Z-Image Finetune Inference", theme=gr.themes.Default()) as demo:
         gr.Markdown("# 🎨 Z-Image Finetune 推理工具")
         gr.Markdown("支持加载 Full Finetune 训练的模型权重，可实时调节基础模型与微调模型的混合比例。")
         
