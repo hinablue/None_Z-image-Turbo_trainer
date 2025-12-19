@@ -153,14 +153,26 @@ if %errorlevel%==0 (
 )
 
 :: Check GPU
-nvidia-smi >nul 2>&1
-if %errorlevel%==0 (
-    for /f "tokens=*" %%i in ('nvidia-smi --query-gpu^=name --format^=csv^,noheader 2^>nul') do (
-        echo    GPU:     [OK] %%i
+set "GPU_CHECK_SCRIPT=%SCRIPT_DIR%scripts\check_gpu.py"
+if exist "%GPU_CHECK_SCRIPT%" (
+    "%PYTHON_EXE%" "%GPU_CHECK_SCRIPT%" >nul 2>&1
+    if %errorlevel%==0 (
+        for /f "tokens=1,2,3 delims=|" %%a in ('"%PYTHON_EXE%" "%GPU_CHECK_SCRIPT%" 2^>nul') do (
+            set "GPU_NAME=%%a"
+            set "GPU_MEM=%%b"
+            set "GPU_TYPE=%%c"
+            if not "!GPU_TYPE!"=="cpu" (
+                echo    GPU:     [OK] !GPU_NAME! (!GPU_MEM!)
+            ) else (
+                echo    GPU:     [-] Not detected
+            )
+        )
+    ) else (
+        echo    GPU:     [-] Not detected
     )
 ) else (
-    echo    GPU:     [-] Not detected
-    )
+    echo    GPU:     [?] Check script unavailable
+)
 
 echo.
 

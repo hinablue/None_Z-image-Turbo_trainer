@@ -44,7 +44,7 @@ def find_images(input_dir: str, extensions: Tuple[str, ...] = ('.jpg', '.jpeg', 
 def resize_image(image: Image.Image, resolution: int, bucket_no_upscale: bool = True) -> Image.Image:
     """调整图片大小，保持宽高比"""
     w, h = image.size
-    
+
     # 计算目标尺寸
     aspect = w / h
     if aspect > 1:
@@ -55,21 +55,21 @@ def resize_image(image: Image.Image, resolution: int, bucket_no_upscale: bool = 
         # 纵向图片
         new_h = resolution
         new_w = int(resolution * aspect)
-    
+
     # 对齐到 8 的倍数（VAE 要求）
     new_w = (new_w // 8) * 8
     new_h = (new_h // 8) * 8
-    
+
     # 不放大
     if bucket_no_upscale:
         new_w = min(new_w, w)
         new_h = min(new_h, h)
         new_w = (new_w // 8) * 8
         new_h = (new_h // 8) * 8
-    
+
     if (new_w, new_h) != (w, h):
         image = image.resize((new_w, new_h), Image.LANCZOS)
-    
+
     return image
 
 
@@ -85,34 +85,34 @@ def process_image(
     """处理单张图片"""
     # 加载图片
     image = Image.open(image_path).convert('RGB')
-    
+
     # 调整大小
     image = resize_image(image, resolution)
     w, h = image.size
-    
+
     # 转换为 tensor
     import numpy as np
     img_array = np.array(image).astype(np.float32) / 255.0
     img_tensor = torch.from_numpy(img_array).permute(2, 0, 1).unsqueeze(0)  # (1, 3, H, W)
-    
+
     # 归一化到 [-1, 1]
     img_tensor = img_tensor * 2.0 - 1.0
     img_tensor = img_tensor.to(device=device, dtype=dtype)
-    
+
     # 编码
     with torch.no_grad():
         latent = vae.encode(img_tensor).latent_dist.sample()
-    
+
     # 应用 scaling 和 shift (Pipeline format)
     scaling_factor = getattr(vae.config, 'scaling_factor', 0.3611)
     shift_factor = getattr(vae.config, 'shift_factor', 0.1159)
     latent = (latent - shift_factor) * scaling_factor
-    
+
     # 保存
     latent = latent.cpu()
     F, H, W = 1, latent.shape[2], latent.shape[3]
     dtype_str = "bf16" if dtype == torch.bfloat16 else "fp16"
-    
+
     # 计算输出路径 (保持目录结构)
     if input_root:
         try:
@@ -122,13 +122,13 @@ def process_image(
             target_dir = output_dir
     else:
         target_dir = output_dir
-        
+
     target_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 文件名格式: {name}_{WxH}_{arch}.safetensors
     name = image_path.stem
     output_file = target_dir / f"{name}_{w}x{h}_{ARCHITECTURE}.safetensors"
-    
+
     # 保存为 safetensors
     sd = {f"latents_{F}x{H}x{W}_{dtype_str}": latent.squeeze(0)}
     save_file(sd, str(output_file))
@@ -138,15 +138,15 @@ def worker_process(gpu_id: int, image_paths: List[Path], args, output_dir: Path,
     """单个 GPU worker 进程"""
     import os
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
-    
-    device = torch.device("cuda:0")  # 在这个进程中只能看到一张卡
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
     dtype = torch.bfloat16
-    
+
     # 加载 VAE
     print(f"[GPU {gpu_id}] Loading VAE...", flush=True)
     vae = load_vae(args.vae, device=device, dtype=dtype)
     print(f"[GPU {gpu_id}] VAE loaded, processing {len(image_paths)} images", flush=True)
-    
+
     processed = 0
     for i, image_path in enumerate(image_paths):
         # 检查是否已存在
@@ -160,28 +160,28 @@ def worker_process(gpu_id: int, image_paths: List[Path], args, output_dir: Path,
             if current % 10 == 0 or current == total_count:
                 print(f"Progress: {current}/{total_count}", flush=True)
             continue
-        
+
         try:
             process_image(image_path, vae, args.resolution, output_dir, device, dtype, input_root=Path(args.input_dir))
             processed += 1
         except Exception as e:
             print(f"[GPU {gpu_id}] Error: {image_path.name}: {e}", flush=True)
-        
+
         # 更新共享计数器并输出进度
         with counter_lock:
             shared_counter.value += 1
             current = shared_counter.value
-        
+
         # 每 10 张或最后一张输出进度
         if current % 10 == 0 or current == total_count:
             print(f"Progress: {current}/{total_count}", flush=True)
-    
+
     # 清理
     del vae
     import gc
     gc.collect()
     torch.cuda.empty_cache()
-    
+
     return processed
 
 
@@ -194,40 +194,40 @@ def main():
     parser.add_argument("--batch_size", type=int, default=1, help="Batch size")
     parser.add_argument("--skip_existing", action="store_true", help="Skip existing cache files")
     parser.add_argument("--num_gpus", type=int, default=0, help="Number of GPUs (0=auto detect)")
-    
+
     args = parser.parse_args()
-    
+
     # 创建输出目录
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 查找图片
     images = find_images(args.input_dir)
     total = len(images)
     print(f"Found {total} images", flush=True)
-    
+
     if total == 0:
         print("No images to process", flush=True)
         return
-    
+
     # 检测 GPU 数量
     num_gpus = args.num_gpus if args.num_gpus > 0 else torch.cuda.device_count()
-    
+
     if num_gpus <= 1:
         # 单 GPU 模式（兼容原有逻辑）
         print(f"Using single GPU mode", flush=True)
         print(f"Progress: 0/{total}", flush=True)
-        
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
         dtype = torch.bfloat16
-        
+
         print(f"Loading VAE: {args.vae}", flush=True)
         vae = load_vae(args.vae, device=device, dtype=dtype)
         print("VAE loaded successfully", flush=True)
-        
+
         processed = 0
         skipped = 0
-        
+
         for i, image_path in enumerate(images, 1):
             name = image_path.stem
             existing = list(output_dir.glob(f"{name}_*_{ARCHITECTURE}.safetensors"))
@@ -235,7 +235,7 @@ def main():
                 skipped += 1
                 print(f"Progress: {i}/{total}", flush=True)
                 continue
-            
+
             try:
                 process_image(image_path, vae, args.resolution, output_dir, device, dtype, input_root=Path(args.input_dir))
                 processed += 1
@@ -243,24 +243,24 @@ def main():
             except Exception as e:
                 print(f"Error: {image_path}: {e}", flush=True)
                 print(f"Progress: {i}/{total}", flush=True)
-        
+
         print(f"Latent caching completed! Processed: {processed}, Skipped: {skipped}", flush=True)
-        
+
         del vae
         import gc
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         print("VAE unloaded, GPU memory released", flush=True)
-    
+
     else:
         # 多 GPU 模式
         import multiprocessing as mp
         from concurrent.futures import ProcessPoolExecutor, as_completed
-        
+
         print(f"🚀 Multi-GPU mode: using {num_gpus} GPUs", flush=True)
         print(f"Progress: 0/{total}", flush=True)
-        
+
         # 分片
         chunk_size = (total + num_gpus - 1) // num_gpus
         chunks = []
@@ -269,26 +269,26 @@ def main():
             end = min(start + chunk_size, total)
             if start < total:
                 chunks.append((i, images[start:end]))
-        
+
         print(f"Distributing {total} images across {len(chunks)} GPUs", flush=True)
         for gpu_id, chunk in chunks:
             print(f"  GPU {gpu_id}: {len(chunk)} images", flush=True)
-        
+
         # 创建共享计数器和锁
         manager = mp.Manager()
         shared_counter = manager.Value('i', 0)
         counter_lock = manager.Lock()
-        
+
         # 启动进程池
         mp.set_start_method('spawn', force=True)
-        
+
         total_processed = 0
         with ProcessPoolExecutor(max_workers=num_gpus) as executor:
             futures = {
                 executor.submit(worker_process, gpu_id, chunk, args, output_dir, total, shared_counter, counter_lock): gpu_id
                 for gpu_id, chunk in chunks
             }
-            
+
             for future in as_completed(futures):
                 gpu_id = futures[future]
                 try:
@@ -297,7 +297,7 @@ def main():
                     print(f"[GPU {gpu_id}] Completed: {processed} images", flush=True)
                 except Exception as e:
                     print(f"[GPU {gpu_id}] Worker error: {e}", flush=True)
-        
+
         print(f"Multi-GPU latent caching completed! Total processed: {total_processed}", flush=True)
 
 

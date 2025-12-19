@@ -124,12 +124,23 @@ else
 fi
 
 # 检查 GPU
-if command -v nvidia-smi &> /dev/null; then
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | head -1)
-    GPU_MEM=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader 2>/dev/null | head -1)
-    echo -e "  GPU: ${GREEN}✓ $GPU_NAME ($GPU_MEM)${NC}"
+GPU_CHECK_SCRIPT="$SCRIPT_DIR/scripts/check_gpu.py"
+if [ -f "$GPU_CHECK_SCRIPT" ] && python3 "$GPU_CHECK_SCRIPT" > /dev/null 2>&1; then
+    GPU_INFO=$(python3 "$GPU_CHECK_SCRIPT" 2>/dev/null)
+    if [ -n "$GPU_INFO" ]; then
+        GPU_NAME=$(echo "$GPU_INFO" | cut -d'|' -f1)
+        GPU_MEM=$(echo "$GPU_INFO" | cut -d'|' -f2)
+        GPU_TYPE=$(echo "$GPU_INFO" | cut -d'|' -f3)
+        if [ "$GPU_TYPE" != "cpu" ]; then
+            echo -e "  GPU: ${GREEN}✓ $GPU_NAME ($GPU_MEM)${NC}"
+        else
+            echo -e "  GPU: ${RED}✗ 未检测到${NC}"
+        fi
+    else
+        echo -e "  GPU: ${RED}✗ 未检测到${NC}"
+    fi
 else
-    echo -e "  GPU: ${RED}✗ 未检测到${NC}"
+    echo -e "  GPU: ${YELLOW}? 检测脚本不可用${NC}"
 fi
 echo ""
 
@@ -142,13 +153,13 @@ check_frontend_build() {
     if [ ! -d "$DIST_DIR" ]; then
         return 0
     fi
-    
+
     # 检查 src 目录是否比 dist 新
     NEWEST_SRC=$(find "$SRC_DIR" -type f \( -name "*.vue" -o -name "*.ts" -o -name "*.tsx" \) -newer "$DIST_DIR/index.html" 2>/dev/null | head -1)
     if [ -n "$NEWEST_SRC" ]; then
         return 0
     fi
-    
+
     return 1
 }
 
