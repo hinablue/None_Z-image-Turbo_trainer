@@ -5,7 +5,7 @@ setlocal enabledelayedexpansion
 :: ============================================================================
 :: None Trainer - Windows 一键部署脚本
 :: ============================================================================
-:: 
+::
 :: 使用方法: 双击运行或在命令行执行 setup.bat
 ::
 :: ============================================================================
@@ -36,17 +36,32 @@ if not exist "%PYTHON_EXE%" (
 for /f "tokens=2" %%i in ('"%PYTHON_EXE%" --version 2^>^&1') do set PYTHON_VERSION=%%i
 echo   嵌入版 Python: %PYTHON_VERSION%
 
-:: 检查 CUDA
+:: 检查 GPU (CUDA/MPS)
 echo.
-echo [2/8] 检查 CUDA...
-nvidia-smi >nul 2>&1
-if errorlevel 1 (
-    echo   [警告] 未检测到 NVIDIA GPU
+echo [2/8] 检查 GPU...
+set "GPU_CHECK_SCRIPT=%SCRIPT_DIR%scripts\check_gpu.py"
+if exist "%GPU_CHECK_SCRIPT%" (
+    "%PYTHON_EXE%" "%GPU_CHECK_SCRIPT%" >nul 2>&1
+    if %errorlevel%==0 (
+        for /f "tokens=1,2,3 delims=|" %%a in ('"%PYTHON_EXE%" "%GPU_CHECK_SCRIPT%" 2^>nul') do (
+            set "GPU_NAME=%%a"
+            set "GPU_MEM=%%b"
+            set "GPU_TYPE=%%c"
+            if "!GPU_TYPE!"=="cuda" (
+                echo   GPU: !GPU_NAME!
+                echo   显存: !GPU_MEM!
+            ) else if "!GPU_TYPE!"=="mps" (
+                echo   GPU: !GPU_NAME!
+                echo   内存: !GPU_MEM! (共享系统内存)
+            ) else (
+                echo   [警告] 未检测到 GPU，将使用 CPU
+            )
+        )
+    ) else (
+        echo   [警告] 未检测到 GPU
+    )
 ) else (
-    for /f "tokens=*" %%i in ('nvidia-smi --query-gpu^=name --format^=csv^,noheader 2^>nul') do set GPU_NAME=%%i
-    for /f "tokens=*" %%i in ('nvidia-smi --query-gpu^=memory.total --format^=csv^,noheader 2^>nul') do set GPU_MEM=%%i
-    echo   GPU: !GPU_NAME!
-    echo   显存: !GPU_MEM!
+    echo   [警告] GPU 检测脚本不可用
 )
 
 :: 跳过虚拟环境（使用嵌入版Python）

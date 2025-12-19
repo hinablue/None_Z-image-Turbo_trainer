@@ -2,7 +2,7 @@
 # ============================================================================
 # None Trainer - Linux/Mac 一键部署脚本
 # ============================================================================
-# 
+#
 # 使用方法:
 #   chmod +x setup.sh
 #   ./setup.sh
@@ -37,17 +37,30 @@ fi
 PYTHON_VERSION=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')
 echo -e "  Python 版本: ${GREEN}$PYTHON_VERSION${NC}"
 
-# 检查 CUDA
+# 检查 GPU (CUDA/MPS)
 echo ""
-echo -e "${BLUE}[2/8]${NC} 检查 CUDA..."
-if command -v nvidia-smi &> /dev/null; then
-    CUDA_VERSION=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -1)
-    GPU_NAME=$(nvidia-smi --query-gpu=name --format=csv,noheader | head -1)
-    GPU_MEMORY=$(nvidia-smi --query-gpu=memory.total --format=csv,noheader | head -1)
-    echo -e "  GPU: ${GREEN}$GPU_NAME${NC}"
-    echo -e "  显存: ${GREEN}$GPU_MEMORY${NC}"
+echo -e "${BLUE}[2/8]${NC} 检查 GPU..."
+GPU_CHECK_SCRIPT="$SCRIPT_DIR/scripts/check_gpu.py"
+if [ -f "$GPU_CHECK_SCRIPT" ]; then
+    GPU_INFO=$(python3 "$GPU_CHECK_SCRIPT" 2>/dev/null)
+    if [ -n "$GPU_INFO" ]; then
+        GPU_NAME=$(echo "$GPU_INFO" | cut -d'|' -f1)
+        GPU_MEM=$(echo "$GPU_INFO" | cut -d'|' -f2)
+        GPU_TYPE=$(echo "$GPU_INFO" | cut -d'|' -f3)
+        if [ "$GPU_TYPE" = "cuda" ]; then
+            echo -e "  GPU: ${GREEN}$GPU_NAME${NC}"
+            echo -e "  显存: ${GREEN}$GPU_MEM${NC}"
+        elif [ "$GPU_TYPE" = "mps" ]; then
+            echo -e "  GPU: ${GREEN}$GPU_NAME${NC}"
+            echo -e "  内存: ${GREEN}$GPU_MEM (共享系统内存)${NC}"
+        else
+            echo -e "${YELLOW}警告: 未检测到 GPU，将使用 CPU${NC}"
+        fi
+    else
+        echo -e "${YELLOW}警告: 未检测到 GPU${NC}"
+    fi
 else
-    echo -e "${YELLOW}警告: 未检测到 NVIDIA GPU${NC}"
+    echo -e "${YELLOW}警告: GPU 检测脚本不可用${NC}"
 fi
 
 # 创建虚拟环境

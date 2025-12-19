@@ -9,6 +9,7 @@ from typing import Optional, Dict, Any
 
 from core.config import PROJECT_ROOT, MODEL_PATH, LONGCAT_MODEL_PATH, MODEL_PATHS, get_model_path
 from core import state
+from core.gpu_info import get_gpu_info as get_gpu_info_from_module
 
 # 导入新的模型检测和下载抽象层
 import sys
@@ -138,7 +139,7 @@ async def get_system_info():
     import torch
     import diffusers
     import platform
-    
+
     # Get Windows version properly
     if platform.system() == "Windows":
         win_ver = platform.win32_ver()
@@ -152,39 +153,39 @@ async def get_system_info():
             os_name = f"Windows {win_ver[0]} (Build {build})"
     else:
         os_name = platform.platform()
-    
+
     # xformers
     try:
         import xformers
         xformers_ver = xformers.__version__
     except ImportError:
         xformers_ver = "N/A"
-    
+
     # accelerate
     try:
         import accelerate
         accelerate_ver = accelerate.__version__
     except ImportError:
         accelerate_ver = "N/A"
-    
+
     # transformers
     try:
         import transformers
         transformers_ver = transformers.__version__
     except ImportError:
         transformers_ver = "N/A"
-    
+
     # bitsandbytes
     try:
         import bitsandbytes
         bnb_ver = bitsandbytes.__version__
     except ImportError:
         bnb_ver = "N/A"
-    
+
     # CUDA / cuDNN
     cuda_ver = torch.version.cuda if torch.cuda.is_available() else "N/A"
     cudnn_ver = str(torch.backends.cudnn.version()) if torch.backends.cudnn.is_available() else "N/A"
-    
+
     return {
         "python": platform.python_version(),
         "pytorch": torch.__version__,
@@ -207,14 +208,14 @@ async def get_model_status(model_type: Optional[str] = None):
         model_type = "zimage"
     if model_type not in ["zimage", "longcat"]:
         model_type = "zimage"
-        
+
     try:
         model_path = get_model_path(model_type, "base")
         detector = create_model_detector(model_type, model_path)
-        
+
         # 本地 Schema 校验 (快)
         result = detector.validate_local()
-        
+
         # 映射状态码
         status_map = {
             ModelStatus.VALID: "ready",
@@ -224,7 +225,7 @@ async def get_model_status(model_type: Optional[str] = None):
             ModelStatus.DOWNLOADING: "downloading"
         }
         status_str = status_map.get(result["overall_status"], "missing")
-        
+
         # 转换组件格式以兼容前端
         return {
             "status": status_str,
@@ -254,7 +255,7 @@ async def get_model_status(model_type: Optional[str] = None):
 
 @router.post("/verify-model")
 @router.get("/verify-model")
-async def verify_model_integrity(request: Optional[ModelOpsRequest] = None, 
+async def verify_model_integrity(request: Optional[ModelOpsRequest] = None,
                                model_type: Optional[str] = None):
     """校验模型完整性（深度在线校验）"""
     if request is not None:
@@ -265,19 +266,19 @@ async def verify_model_integrity(request: Optional[ModelOpsRequest] = None,
     try:
         model_path = get_model_path(model_type, "base")
         detector = create_model_detector(model_type, model_path)
-        
+
         # 调用新实现的在线校验 (Async)
         result = await detector.validate_online()
 
-        
+
         status_map = {
             ModelStatus.VALID: "ready",
-            ModelStatus.MISSING: "missing", 
+            ModelStatus.MISSING: "missing",
             ModelStatus.INCOMPLETE: "incomplete",
             ModelStatus.CORRUPTED: "incomplete"
         }
         status_str = status_map.get(result["overall_status"], "missing")
-        
+
         valid_files_count = result["summary"]["valid_components"]
         total_files_count = result["summary"]["total_components"]
 
@@ -304,8 +305,8 @@ async def verify_model_integrity(request: Optional[ModelOpsRequest] = None,
         import traceback
         traceback.print_exc()
         return {
-            "success": False, 
-            "status": "error", 
+            "success": False,
+            "status": "error",
             "error": str(e),
             "message": str(e)
         }
@@ -324,7 +325,7 @@ async def download_model(request: Optional[ModelOpsRequest] = None, model_type: 
         actual_type = model_type
     else:
         actual_type = "zimage"
-    
+
     model_type = actual_type
     if state.download_process and state.download_process.poll() is None:
         raise HTTPException(status_code=400, detail="Download already in progress")
@@ -335,34 +336,34 @@ async def download_model(request: Optional[ModelOpsRequest] = None, model_type: 
         detector = create_model_detector(model_type, model_path)
         spec = detector.spec
         model_id = spec.model_id
-        
+
         if not model_id:
             raise HTTPException(status_code=400, detail=f"Model {model_type} does not support auto-download")
-        
+
         model_path.mkdir(parents=True, exist_ok=True)
-        
+
         # 维持原有的脚本调用逻辑（最稳健的方式）
         download_script = PROJECT_ROOT / "scripts" / "download_fresh.py"
         if not download_script.exists():
             download_script = PROJECT_ROOT / "scripts" / "download_model.py"
-        
+
         cmd = [
-            sys.executable, 
+            sys.executable,
             str(download_script),
             str(model_path),
             model_id
         ]
-        
+
         state.add_log(f"开始下载 {spec.name} 模型...", "info")
         state.add_log(f"ModelScope ID: {model_id}", "info")
         state.add_log(f"下载目录: {model_path}", "info")
-        
+
         state.update_download_progress(
             model_type=model_type,
             model_name=spec.name,
             total_gb=spec.size_gb
         )
-        
+
         state.download_process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -373,13 +374,13 @@ async def download_model(request: Optional[ModelOpsRequest] = None, model_type: 
             bufsize=1,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0
         )
-        
+
         # 创建进程输出读取器
         from routers.websocket import parse_download_progress
         state.start_process_reader(state.download_process, "download", parse_func=parse_download_progress)
-        
+
         return {
-            "success": True, 
+            "success": True,
             "message": f"{spec.name} 下载已启动",
             "model_type": model_type,
             "model_id": model_id,
@@ -396,9 +397,9 @@ async def get_download_status():
     """Get status of the download process"""
     if state.download_process is None:
         return {"status": "idle"}
-    
+
     return_code = state.download_process.poll()
-    
+
     if return_code is None:
         return {"status": "running"}
     elif return_code == 0:
@@ -410,49 +411,11 @@ async def get_download_status():
 
 @router.get("/gpu")
 async def get_gpu_info():
-    """Get GPU information using nvidia-smi (supports multi-GPU)"""
-    gpus = []
-    
+    """Get GPU information (supports CUDA, MPS, and CPU)"""
     try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu",
-             "--format=csv,noheader,nounits"],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='replace',
-            timeout=5
-        )
-        
-        if result.returncode == 0:
-            lines = result.stdout.strip().split("\n")
-            for line in lines:
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 6:
-                    try:
-                        gpu_index = int(parts[0])
-                        memory_total = float(parts[2]) / 1024  # Convert MB to GB
-                        memory_used = float(parts[3]) / 1024
-                        gpus.append({
-                            "index": gpu_index,
-                            "name": parts[1],
-                            "memoryTotal": round(memory_total, 1),
-                            "memoryUsed": round(memory_used, 1),
-                            "memoryPercent": round((memory_used / memory_total) * 100) if memory_total > 0 else 0,
-                            "utilization": int(parts[4]) if parts[4].strip() else 0,
-                            "temperature": int(parts[5]) if parts[5].strip() else 0
-                        })
-                    except (ValueError, IndexError) as e:
-                        print(f"[GPU] Failed to parse line '{line}': {e}")
-                        continue
-    except FileNotFoundError:
-        print("[GPU] nvidia-smi not found")
+        return get_gpu_info_from_module()
     except Exception as e:
-        print(f"[GPU] Error: {e}")
-    
-    # 返回格式兼容旧版（单卡）和新版（多卡）
-    if len(gpus) == 0:
-        # 无法检测到 GPU
+        print(f"[GPU] Error getting GPU info: {e}")
         return {
             "name": "Unknown",
             "memoryTotal": 0,
@@ -462,35 +425,5 @@ async def get_gpu_info():
             "temperature": 0,
             "gpus": [],
             "count": 0
-        }
-    elif len(gpus) == 1:
-        # 单卡，保持向后兼容
-        gpu = gpus[0]
-        return {
-            "name": gpu["name"],
-            "memoryTotal": gpu["memoryTotal"],
-            "memoryUsed": gpu["memoryUsed"],
-            "memoryPercent": gpu["memoryPercent"],
-            "utilization": gpu["utilization"],
-            "temperature": gpu["temperature"],
-            "gpus": gpus,
-            "count": 1
-        }
-    else:
-        # 多卡，汇总信息 + 详细列表
-        total_memory = sum(g["memoryTotal"] for g in gpus)
-        used_memory = sum(g["memoryUsed"] for g in gpus)
-        avg_utilization = sum(g["utilization"] for g in gpus) // len(gpus)
-        max_temp = max(g["temperature"] for g in gpus)
-        
-        return {
-            "name": f"{len(gpus)}x {gpus[0]['name']}",
-            "memoryTotal": round(total_memory, 1),
-            "memoryUsed": round(used_memory, 1),
-            "memoryPercent": round((used_memory / total_memory) * 100) if total_memory > 0 else 0,
-            "utilization": avg_utilization,
-            "temperature": max_temp,
-            "gpus": gpus,
-            "count": len(gpus)
         }
 
