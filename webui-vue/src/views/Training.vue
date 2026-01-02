@@ -107,6 +107,10 @@
             <span class="label">Latent Jitter</span>
             <span class="value">{{ currentConfig.acrf?.latent_jitter_scale }}</span>
           </div>
+          <div class="preview-item" v-if="currentConfig.acrf?.enable_curvature">
+            <span class="label">曲率惩罚</span>
+            <span class="value highlight">λ={{ currentConfig.acrf?.lambda_curvature }} / {{ currentConfig.acrf?.curvature_interval }}步</span>
+          </div>
         </div>
       </div>
       
@@ -229,6 +233,10 @@
           <div class="preview-item">
             <span class="label">启用分桶</span>
             <span class="value">{{ currentConfig.dataset?.enable_bucket ? '是' : '否' }}</span>
+          </div>
+          <div class="preview-item" v-if="currentConfig.dataset?.drop_text_ratio > 0">
+            <span class="label">Drop Text</span>
+            <span class="value highlight">{{ (currentConfig.dataset?.drop_text_ratio * 100).toFixed(0) }}%</span>
           </div>
         </div>
         <div class="datasets-list" v-if="currentConfig.dataset?.datasets?.length > 0">

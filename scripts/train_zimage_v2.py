@@ -114,6 +114,20 @@ def parse_args():
     parser.add_argument("--lambda_color", type=float, default=0.3)
     parser.add_argument("--lambda_tex", type=float, default=0.5)
     
+    # Curvature Penalty (曲率惩罚 - 鼓励更直的轨迹)
+    parser.add_argument("--enable_curvature", type=bool, default=False,
+        help="启用曲率惩罚 (鼓励锚点间匀速直线运动)")
+    parser.add_argument("--lambda_curvature", type=float, default=0.05,
+        help="曲率惩罚权重")
+    parser.add_argument("--curvature_interval", type=int, default=10,
+        help="每 N 步计算一次曲率惩罚 (减少计算开销)")
+    parser.add_argument("--curvature_start_epoch", type=int, default=0,
+        help="从第 N 个 epoch 开始启用曲率惩罚")
+    
+    # Drop Text (保持低 CFG 能力)
+    parser.add_argument("--drop_text_ratio", type=float, default=0.0,
+        help="丢弃文本条件的概率 (保持低 CFG 能力)，推荐 0.1")
+    
     # Memory optimization
     parser.add_argument("--blocks_to_swap", type=int, default=0)
     parser.add_argument("--block_swap_enabled", type=bool, default=False)
@@ -577,6 +591,13 @@ def main():
                 
                 batch_size = latents.shape[0]
                 
+                # === Drop Text (保持低 CFG 能力) ===
+                # 以一定概率丢弃文本条件，让模型学习无条件生成新风格
+                drop_text_ratio = getattr(args, 'drop_text_ratio', 0.0)
+                if drop_text_ratio > 0 and torch.rand(1).item() < drop_text_ratio:
+                    # 创建空文本嵌入 (全零或很小的值)
+                    vl_embed = [torch.zeros_like(v) for v in vl_embed]
+                
                 # Generate noise
                 noise = torch.randn_like(latents)
                 
@@ -747,6 +768,59 @@ def main():
                     logger.warning(f"[NaN] Loss is NaN/Inf at step {global_step}, skipping backward. Components: {loss_components}")
                     optimizer.zero_grad()
                     continue
+                
+                # === Curvature Penalty (曲率惩罚) ===
+                # 鼓励相邻锚点间做匀速直线运动，减少跳跃误差
+                curvature_loss_val = 0.0
+                if (getattr(args, 'enable_curvature', False) and 
+                    args.lambda_curvature > 0 and
+                    epoch >= getattr(args, 'curvature_start_epoch', 0) and
+                    global_step % getattr(args, 'curvature_interval', 10) == 0):
+                    
+                    # 获取当前锚点索引和 sigma
+                    anchor_sigmas = acrf_trainer.sigmas  # 固定的 10 个锚点
+                    current_sigma = timesteps.float() / 1000.0  # 当前采样的 sigma
+                    
+                    # 计算 t-dt 和 t+dt (相邻锚点方向)
+                    dt = 0.1  # 10% 的时间步间隔
+                    sigma_plus = (current_sigma + dt).clamp(0.001, 0.999)
+                    sigma_minus = (current_sigma - dt).clamp(0.001, 0.999)
+                    
+                    # 构造 t+dt 和 t-dt 的加噪 latents
+                    sigma_plus_bc = sigma_plus.view(batch_size, 1, 1, 1)
+                    sigma_minus_bc = sigma_minus.view(batch_size, 1, 1, 1)
+                    
+                    noisy_plus = sigma_plus_bc * noise + (1 - sigma_plus_bc) * latents
+                    noisy_minus = sigma_minus_bc * noise + (1 - sigma_minus_bc) * latents
+                    
+                    # 前向传播 (不计算梯度，节省显存)
+                    with torch.no_grad():
+                        # t + dt
+                        input_plus = noisy_plus.unsqueeze(2)
+                        input_plus_list = list(input_plus.unbind(dim=0))
+                        t_plus_norm = (1000 - sigma_plus * 1000) / 1000.0
+                        t_plus_norm = t_plus_norm.to(dtype=weight_dtype)
+                        pred_plus = transformer(x=input_plus_list, t=t_plus_norm, cap_feats=vl_embed)[0]
+                        pred_plus = -torch.stack(pred_plus, dim=0).squeeze(2)
+                        
+                        # t - dt
+                        input_minus = noisy_minus.unsqueeze(2)
+                        input_minus_list = list(input_minus.unbind(dim=0))
+                        t_minus_norm = (1000 - sigma_minus * 1000) / 1000.0
+                        t_minus_norm = t_minus_norm.to(dtype=weight_dtype)
+                        pred_minus = transformer(x=input_minus_list, t=t_minus_norm, cap_feats=vl_embed)[0]
+                        pred_minus = -torch.stack(pred_minus, dim=0).squeeze(2)
+                    
+                    # 计算加速度 (二阶差分): a = (v+ - 2v + v-) / dt²
+                    # 理想情况: a ≈ 0 (匀速直线运动)
+                    acceleration = (pred_plus - 2 * model_pred.detach() + pred_minus) / (dt ** 2)
+                    curvature_loss = (acceleration ** 2).mean()
+                    
+                    # 添加到总损失
+                    loss = loss + args.lambda_curvature * curvature_loss
+                    curvature_loss_val = curvature_loss.item()
+                
+                loss_components['curvature'] = curvature_loss_val
                 
                 # Cast loss to float32 for stable backward
                 loss = loss.float()

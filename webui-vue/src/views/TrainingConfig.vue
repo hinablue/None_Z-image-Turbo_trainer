@@ -495,6 +495,27 @@
               <el-switch v-model="config.dataset.enable_bucket" />
             </div>
 
+            <div class="subsection-label">🎯 Turbo 加速保持 (Drop Text)</div>
+            <div class="control-row">
+              <span class="label">
+                Drop Text 比例
+                <el-tooltip content="以一定概率丢弃文本条件，保持低 CFG (CFG=1) 生成能力。推荐 0.1 (10%)" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-slider v-model="config.dataset.drop_text_ratio" :min="0" :max="0.3" :step="0.05" :show-tooltip="false" class="slider-flex" />
+              <el-input-number v-model="config.dataset.drop_text_ratio" :min="0" :max="0.3" :step="0.05" controls-position="right" class="input-fixed" />
+            </div>
+            <el-alert 
+              v-if="config.dataset.drop_text_ratio > 0" 
+              type="info" 
+              :closable="false" 
+              show-icon
+              style="margin-top: 8px"
+            >
+              已启用 Drop Text ({{ (config.dataset.drop_text_ratio * 100).toFixed(0) }}%)，有助于保持 Turbo 低 CFG 加速能力
+            </el-alert>
+
             <div class="subsection-label-with-action">
               <span>数据集列表 (DATASETS)</span>
               <div class="dataset-toolbar">
@@ -734,6 +755,49 @@
               <el-slider v-model="config.acrf.latent_jitter_scale" :min="0" :max="0.1" :step="0.01" :show-tooltip="false" class="slider-flex" />
               <el-input-number v-model="config.acrf.latent_jitter_scale" :min="0" :max="0.1" :step="0.01" controls-position="right" class="input-fixed" />
             </div>
+
+            <div class="subsection-label">🎯 曲率惩罚 (Curvature Penalty)</div>
+            <div class="control-row">
+              <span class="label">
+                启用曲率惩罚
+                <el-tooltip content="鼓励锚点间匀速直线运动，减少采样步数时的误差。推荐开启以获得更直的轨迹" placement="top">
+                  <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                </el-tooltip>
+              </span>
+              <el-switch v-model="config.acrf.enable_curvature" />
+            </div>
+            <template v-if="config.acrf.enable_curvature">
+              <div class="control-row">
+                <span class="label">
+                  曲率惩罚权重 (λ)
+                  <el-tooltip content="惩罚强度，越大轨迹越直。推荐 0.01-0.1" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.lambda_curvature" :min="0.01" :max="0.2" :step="0.01" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.lambda_curvature" :min="0.01" :max="0.2" :step="0.01" controls-position="right" class="input-fixed" />
+              </div>
+              <div class="control-row">
+                <span class="label">
+                  计算间隔 (N 步)
+                  <el-tooltip content="每 N 步计算一次曲率惩罚，减少计算开销。推荐 10" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.curvature_interval" :min="1" :max="50" :step="1" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.curvature_interval" :min="1" :max="50" controls-position="right" class="input-fixed" />
+              </div>
+              <div class="control-row">
+                <span class="label">
+                  延迟启用 (Epoch)
+                  <el-tooltip content="从第 N 个 epoch 开始启用曲率惩罚。设 0 为一开始就启用" placement="top">
+                    <el-icon class="help-icon"><QuestionFilled /></el-icon>
+                  </el-tooltip>
+                </span>
+                <el-slider v-model="config.acrf.curvature_start_epoch" :min="0" :max="10" :step="1" :show-tooltip="false" class="slider-flex" />
+                <el-input-number v-model="config.acrf.curvature_start_epoch" :min="0" :max="10" controls-position="right" class="input-fixed" />
+              </div>
+            </template>
 
             <div class="subsection-label">损失权重配置（自由组合）</div>
             
@@ -1014,7 +1078,12 @@ function getDefaultConfig() {
       // 时间步感知 Loss 权重
       enable_timestep_aware_loss: false,
       timestep_high_threshold: 0.7,
-      timestep_low_threshold: 0.3
+      timestep_low_threshold: 0.3,
+      // Curvature Penalty (曲率惩罚)
+      enable_curvature: false,
+      lambda_curvature: 0.05,
+      curvature_interval: 10,
+      curvature_start_epoch: 0
     },
     network: {
       dim: 8,
@@ -1059,6 +1128,7 @@ function getDefaultConfig() {
       batch_size: 1,
       shuffle: true,
       enable_bucket: true,
+      drop_text_ratio: 0.1,  // Drop Text 保持低 CFG
       datasets: [] as any[]
     },
     reg_dataset: {
