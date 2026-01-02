@@ -32,6 +32,20 @@ free_stream_ratio = 0.3  # 自由流比例 0.3=30%
 # ⚠️ 比 jitter_scale 更重要！推荐 0.03-0.05
 latent_jitter_scale = 0.0
 
+# Curvature Penalty（曲率惩罚 - 轨迹直化）
+# 鼓励相邻锚点间匀速直线运动，减少采样步数时的误差
+# 推荐：enable_curvature=true, lambda_curvature=0.05
+enable_curvature = false
+lambda_curvature = 0.05      # 惩罚权重 (0.01-0.1)
+curvature_interval = 10      # 每 N 步计算一次 (减少开销)
+curvature_start_epoch = 0    # 从第 N 个 epoch 开始启用
+
+# Drop Text（保持低 CFG 能力 - 关键参数）
+# 以一定概率丢弃文本条件，让模型学习无条件生成新风格
+# 这样 CFG=1 仍然可以正常出图，无需提高 CFG
+# 推荐 0.1 (10%)
+drop_text_ratio = 0.1
+
 [lora]
 # LoRA Rank (维度)
 # 建议: 8-16 (Turbo 模型不宜过大)
