@@ -756,8 +756,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue'
-import { useDatasetStore, type DatasetImage } from '@/stores/dataset'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+import { useDatasetStore, type DatasetImage, type LocalDataset } from '@/stores/dataset'
 import { useTrainingStore } from '@/stores/training'
 import { useWebSocketStore } from '@/stores/websocket'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -767,6 +767,35 @@ import axios from 'axios'
 const datasetStore = useDatasetStore()
 const trainingStore = useTrainingStore()
 const wsStore = useWebSocketStore()
+
+// ============================================================================
+// 资源清理：跟踪所有定时器
+// ============================================================================
+const activeIntervals: number[] = []
+const activeTimeouts: number[] = []
+
+function trackInterval(id: number): number {
+  activeIntervals.push(id)
+  return id
+}
+
+function trackTimeout(id: number): number {
+  activeTimeouts.push(id)
+  return id
+}
+
+function clearTrackedInterval(id: number) {
+  clearInterval(id)
+  const index = activeIntervals.indexOf(id)
+  if (index > -1) activeIntervals.splice(index, 1)
+}
+
+function clearAllTrackedTimers() {
+  activeIntervals.forEach(id => clearInterval(id))
+  activeTimeouts.forEach(id => clearTimeout(id))
+  activeIntervals.length = 0
+  activeTimeouts.length = 0
+}
 
 // 图片加载失败处理
 const imageLoadFailed = ref(new Set<string>())
@@ -817,17 +846,13 @@ function retryLoadImage(image: DatasetImage) {
 // 缓存状态（从 WebSocket 获取实时进度）
 const cacheStatus = computed(() => wsStore.cacheStatus)
 
-// 视图状态
-interface LocalDataset {
-  name: string
-  path: string
-  imageCount: number
-}
-
+// 视图状态（currentView 为当前打开的数据集，设为 null 则显示列表）
 const currentView = ref<LocalDataset | null>(null)
-const localDatasets = ref<LocalDataset[]>([])
-const datasetsDir = ref('')
 const datasetPath = ref('')
+
+// 从 Store 获取本地数据集列表和目录
+const localDatasets = computed(() => datasetStore.localDatasets)
+const datasetsDir = computed(() => datasetStore.datasetsDir)
 
 // 缓存计数（使用后端返回的全局统计，而不是当前页数据）
 const latentCachedCount = computed(() => {
@@ -946,61 +971,17 @@ async function calculateBuckets() {
   bucketResults.value = []
   
   try {
-    // 从当前图片列表计算分桶
-    const images = datasetStore.currentImages
-    const limit = bucketConfig.value.resolutionLimit
-    const batchSize = bucketConfig.value.batchSize
+    // 使用后端 API 计算全量数据的分桶（而不只是当前页）
+    const response = await axios.post('/api/dataset/calculate-buckets', {
+      path: currentView.value.path,
+      batch_size: bucketConfig.value.batchSize,
+      resolution_limit: bucketConfig.value.resolutionLimit
+    })
     
-    // 按分辨率分组
-    const buckets: Record<string, { width: number; height: number; count: number }> = {}
-    
-    for (const img of images) {
-      let w = img.width
-      let h = img.height
-      
-      // 应用分辨率限制
-      if (Math.max(w, h) > limit) {
-        const scale = limit / Math.max(w, h)
-        w = Math.floor(w * scale)
-        h = Math.floor(h * scale)
-      }
-      
-      // 对齐到 8 的倍数
-      w = Math.floor(w / 8) * 8
-      h = Math.floor(h / 8) * 8
-      
-      const key = `${w}x${h}`
-      if (!buckets[key]) {
-        buckets[key] = { width: w, height: h, count: 0 }
-      }
-      buckets[key].count++
-    }
-    
-    // 计算每个桶的批次数和丢弃数
-    const results: BucketInfo[] = []
-    const maxCount = Math.max(...Object.values(buckets).map(b => b.count))
-    
-    for (const [key, bucket] of Object.entries(buckets)) {
-      const batches = Math.floor(bucket.count / batchSize)
-      const dropped = bucket.count % batchSize
-      
-      results.push({
-        width: bucket.width,
-        height: bucket.height,
-        aspectRatio: bucket.width / bucket.height,
-        count: bucket.count,
-        batches,
-        dropped: batches > 0 ? dropped : bucket.count, // 如果没有完整批次，全部丢弃
-        percentage: Math.round((bucket.count / maxCount) * 100)
-      })
-    }
-    
-    // 按图片数量排序
-    results.sort((a, b) => b.count - a.count)
-    bucketResults.value = results
+    bucketResults.value = response.data.buckets
     
   } catch (error: any) {
-    ElMessage.error('计算分桶失败: ' + error.message)
+    ElMessage.error('计算分桶失败: ' + (error.response?.data?.detail || error.message))
   } finally {
     calculatingBuckets.value = false
   }
@@ -1074,12 +1055,10 @@ const showCacheDialog = ref(false)
 const cacheOptions = ref<string[]>(['latent', 'text'])
 const cacheModelType = ref('zimage')  // 缓存模型类型
 
-// 加载数据集列表
+// 加载数据集列表（使用 Store 方法）
 async function loadLocalDatasets() {
   try {
-    const response = await axios.get('/api/dataset/list')
-    localDatasets.value = response.data.datasets
-    datasetsDir.value = response.data.datasetsDir
+    await datasetStore.fetchDatasets()
   } catch (error) {
     console.error('Failed to load datasets:', error)
   }
@@ -1092,10 +1071,10 @@ async function openDataset(ds: LocalDataset) {
   await datasetStore.scanDataset(ds.path)
 }
 
-// 返回列表
+// 返回列表（使用 Store 方法）
 function goBack() {
   currentView.value = null
-  datasetStore.currentDataset = null
+  datasetStore.clearCurrentDataset()
 }
 
 const folderInput = ref<HTMLInputElement | null>(null)
@@ -1242,6 +1221,8 @@ function generateCache() {
 }
 
 // 确认生成缓存
+let cacheRefreshIntervalId: number | null = null
+
 async function confirmGenerateCache() {
   if (!currentView.value) return
   
@@ -1259,18 +1240,26 @@ async function confirmGenerateCache() {
     ElMessage.success('缓存生成任务已启动')
     showCacheDialog.value = false
     
-    // 定期刷新数据集以更新缓存状态
-    const refreshInterval = setInterval(async () => {
+    // 清除之前可能存在的刷新定时器
+    if (cacheRefreshIntervalId !== null) {
+      clearTrackedInterval(cacheRefreshIntervalId)
+    }
+    
+    // 定期刷新数据集以更新缓存状态（使用跟踪的定时器）
+    cacheRefreshIntervalId = trackInterval(window.setInterval(async () => {
       if (currentView.value) {
         await datasetStore.scanDataset(currentView.value.path)
       }
-    }, 3000)
+    }, 3000))
     
     // 30秒后停止刷新
-    setTimeout(() => {
-      clearInterval(refreshInterval)
+    trackTimeout(window.setTimeout(() => {
+      if (cacheRefreshIntervalId !== null) {
+        clearTrackedInterval(cacheRefreshIntervalId)
+        cacheRefreshIntervalId = null
+      }
       isGeneratingCache.value = false
-    }, 30000)
+    }, 30000))
     
   } catch (error: any) {
     ElMessage.error('启动失败: ' + (error.response?.data?.detail || error.message))
@@ -1435,6 +1424,17 @@ onMounted(async () => {
   await checkOllamaTaggingStatus()
 })
 
+// 组件卸载时清理所有定时器和轮询
+onUnmounted(() => {
+  console.log('[Dataset] Cleaning up timers and polling...')
+  // 清理所有跟踪的定时器
+  clearAllTrackedTimers()
+  // 确保 Ollama 轮询停止
+  stopOllamaStatusPolling()
+  // 重置缓存刷新定时器引用
+  cacheRefreshIntervalId = null
+})
+
 // 监听缓存状态变化，完成时自动刷新数据集
 watch(
   () => cacheStatus.value,
@@ -1483,12 +1483,12 @@ async function checkOllamaTaggingStatus() {
 }
 
 // 启动状态轮询
-let ollamaPollingInterval: ReturnType<typeof setInterval> | null = null
+let ollamaPollingInterval: number | null = null
 
 function startOllamaStatusPolling() {
   if (ollamaPollingInterval) return
   
-  ollamaPollingInterval = setInterval(async () => {
+  ollamaPollingInterval = trackInterval(window.setInterval(async () => {
     try {
       const statusRes = await axios.get('/api/dataset/ollama/status')
       ollamaStatus.value = statusRes.data
@@ -1506,12 +1506,12 @@ function startOllamaStatusPolling() {
       stopOllamaStatusPolling()
       ollamaTagging.value = false
     }
-  }, 2000)
+  }, 2000))
 }
 
 function stopOllamaStatusPolling() {
   if (ollamaPollingInterval) {
-    clearInterval(ollamaPollingInterval)
+    clearTrackedInterval(ollamaPollingInterval)
     ollamaPollingInterval = null
   }
 }
@@ -1643,14 +1643,18 @@ async function confirmResize() {
     
     ElMessage.success(`开始处理 ${res.data.total} 张图片`)
     
-    // 轮询进度
-    const pollInterval = setInterval(async () => {
+    // 轮询进度（使用跟踪的定时器）
+    let resizePollInterval: number | null = null
+    resizePollInterval = trackInterval(window.setInterval(async () => {
       try {
         const statusRes = await axios.get('/api/dataset/resize/status')
         resizeStatus.value = statusRes.data
         
         if (!statusRes.data.running) {
-          clearInterval(pollInterval)
+          if (resizePollInterval !== null) {
+            clearTrackedInterval(resizePollInterval)
+            resizePollInterval = null
+          }
           resizing.value = false
           ElMessage.success(`处理完成！共 ${statusRes.data.completed} 张`)
           // 刷新数据集
@@ -1661,7 +1665,7 @@ async function confirmResize() {
       } catch (e) {
         console.error('Poll status error:', e)
       }
-    }, 500)
+    }, 500))
     
   } catch (e: any) {
     ElMessage.error('启动失败: ' + (e.response?.data?.detail || e.message))

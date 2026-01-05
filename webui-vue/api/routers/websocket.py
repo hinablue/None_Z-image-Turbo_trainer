@@ -751,68 +751,64 @@ async def get_system_info() -> Dict[str, Any]:
     if _cached_system_info is not None:
         return _cached_system_info
     
+    # 可选导入 - 支持无 GPU 环境
     try:
         import torch
-        import diffusers
-        
-        # xformers
-        try:
-            import xformers
-            xformers_ver = xformers.__version__
-        except ImportError:
-            xformers_ver = "N/A"
-        
-        # accelerate
-        try:
-            import accelerate
-            accelerate_ver = accelerate.__version__
-        except ImportError:
-            accelerate_ver = "N/A"
-        
-        # transformers
-        try:
-            import transformers
-            transformers_ver = transformers.__version__
-        except ImportError:
-            transformers_ver = "N/A"
-        
-        # bitsandbytes
-        try:
-            import bitsandbytes
-            bnb_ver = bitsandbytes.__version__
-        except ImportError:
-            bnb_ver = "N/A"
-        
+        pytorch_ver = torch.__version__
         cuda_ver = torch.version.cuda if torch.cuda.is_available() else "N/A"
         cudnn_ver = str(torch.backends.cudnn.version()) if torch.backends.cudnn.is_available() else "N/A"
-        
-        _cached_system_info = {
-            "python": platform.python_version(),
-            "pytorch": torch.__version__,
-            "diffusers": diffusers.__version__,
-            "xformers": xformers_ver,
-            "accelerate": accelerate_ver,
-            "transformers": transformers_ver,
-            "bitsandbytes": bnb_ver,
-            "cuda": cuda_ver,
-            "cudnn": cudnn_ver,
-            "platform": platform.platform()
-        }
-        return _cached_system_info
-    except Exception as e:
-        print(f"System info error: {e}")
-        return {
-            "python": "",
-            "pytorch": "",
-            "diffusers": "",
-            "xformers": "",
-            "accelerate": "",
-            "transformers": "",
-            "bitsandbytes": "",
-            "cuda": "",
-            "cudnn": "",
-            "platform": ""
-        }
+    except ImportError:
+        pytorch_ver = "N/A"
+        cuda_ver = "N/A"
+        cudnn_ver = "N/A"
+    
+    try:
+        import diffusers
+        diffusers_ver = diffusers.__version__
+    except ImportError:
+        diffusers_ver = "N/A"
+    
+    # xformers
+    try:
+        import xformers
+        xformers_ver = xformers.__version__
+    except ImportError:
+        xformers_ver = "N/A"
+    
+    # accelerate
+    try:
+        import accelerate
+        accelerate_ver = accelerate.__version__
+    except ImportError:
+        accelerate_ver = "N/A"
+    
+    # transformers
+    try:
+        import transformers
+        transformers_ver = transformers.__version__
+    except ImportError:
+        transformers_ver = "N/A"
+    
+    # bitsandbytes
+    try:
+        import bitsandbytes
+        bnb_ver = bitsandbytes.__version__
+    except ImportError:
+        bnb_ver = "N/A"
+    
+    _cached_system_info = {
+        "python": platform.python_version(),
+        "pytorch": pytorch_ver,
+        "diffusers": diffusers_ver,
+        "xformers": xformers_ver,
+        "accelerate": accelerate_ver,
+        "transformers": transformers_ver,
+        "bitsandbytes": bnb_ver,
+        "cuda": cuda_ver,
+        "cudnn": cudnn_ver,
+        "platform": platform.platform()
+    }
+    return _cached_system_info
 
 
 def get_model_status_simple() -> Dict[str, Any]:

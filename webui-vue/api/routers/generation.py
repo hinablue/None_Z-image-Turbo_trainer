@@ -7,10 +7,20 @@ import json
 import io
 import base64
 import sys
-import torch
 from pathlib import Path
 from PIL import Image
 import os
+
+# ============================================================================
+# 可选 torch 导入（支持无 GPU 环境开发）
+# ============================================================================
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    torch = None
+    print("[WARN] torch not available - generation features disabled")
 
 from core.config import OUTPUTS_DIR, PROJECT_ROOT, GenerationRequest, DeleteHistoryRequest, LORA_PATH, get_model_path
 from core import state
@@ -20,8 +30,14 @@ from routers.websocket import sync_broadcast_generation_progress
 if str(PROJECT_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
-# 导入模型适配器注册表
-from models.registry import get_adapter, list_adapters
+# 导入模型适配器注册表（也可能依赖 torch，需要保护）
+try:
+    from models.registry import get_adapter, list_adapters
+    MODELS_AVAILABLE = True
+except ImportError:
+    MODELS_AVAILABLE = False
+    get_adapter = None
+    list_adapters = None
 
 router = APIRouter(prefix="/api", tags=["generation"])
 
@@ -233,6 +249,13 @@ async def delete_lora(path: str):
 async def generate_image(req: GenerationRequest):
     """生成图片 - 异步版本，不阻塞其他请求"""
     
+    # 检查 torch 是否可用
+    if not TORCH_AVAILABLE:
+        raise HTTPException(
+            status_code=503, 
+            detail="Generation unavailable: PyTorch not installed. This feature requires GPU support."
+        )
+    
     def _sync_generate():
         """同步生成逻辑，将在线程池中执行"""
         try:
@@ -428,6 +451,14 @@ async def generate_image(req: GenerationRequest):
 @router.post("/generate-stream")
 async def generate_image_stream(req: GenerationRequest):
     """Generate image with streaming progress updates (SSE)"""
+    
+    # 检查 torch 是否可用
+    if not TORCH_AVAILABLE:
+        raise HTTPException(
+            status_code=503, 
+            detail="Generation unavailable: PyTorch not installed. This feature requires GPU support."
+        )
+    
     from fastapi.responses import StreamingResponse
     import asyncio
     import queue

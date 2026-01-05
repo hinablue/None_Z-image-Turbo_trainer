@@ -107,6 +107,18 @@ def _get_cached_files_and_size(path: Path) -> tuple[list, int]:
     return all_files, total_size
 
 
+def _invalidate_dataset_cache(path: Path):
+    """主动清除数据集缓存（上传/删除/创建后调用）"""
+    path_str = str(path)
+    if path_str in _dataset_cache:
+        del _dataset_cache[path_str]
+        print(f"[Cache] Invalidated cache for: {path}")
+    # 同时清除父目录缓存（如果有子目录结构）
+    parent_str = str(path.parent)
+    if parent_str in _dataset_cache:
+        del _dataset_cache[parent_str]
+
+
 @router.post("/scan")
 async def scan_dataset(request: DatasetScanRequest):
     """Scan a directory for images (带缓存的极速模式)
@@ -333,6 +345,8 @@ async def create_dataset(name: str = Form(...)):
     
     try:
         dataset_path.mkdir(parents=True, exist_ok=True)
+        # 清除父目录缓存（新建数据集后列表需要更新）
+        _invalidate_dataset_cache(DATASETS_DIR)
         return {"success": True, "path": str(dataset_path), "name": safe_name}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create dataset: {str(e)}")
@@ -383,6 +397,9 @@ async def upload_batch(
             traceback.print_exc()
             errors.append(f"{file.filename}: {str(e)}")
             
+    # 清除缓存以确保下次扫描获取最新数据
+    _invalidate_dataset_cache(dataset_path)
+    
     return {
         "success": True, 
         "uploaded": uploaded_count, 
@@ -428,6 +445,9 @@ async def upload_files(
         except Exception as e:
             print(f"ERROR: Failed to save {file.filename}: {e}")
             errors.append(f"{file.filename}: {str(e)}")
+    
+    # 清除缓存以确保下次扫描获取最新数据
+    _invalidate_dataset_cache(dataset_path)
     
     return {
         "success": True,
@@ -573,6 +593,9 @@ async def delete_dataset(dataset_name: str):
         
     try:
         shutil.rmtree(dataset_path)
+        # 清除缓存
+        _invalidate_dataset_cache(dataset_path)
+        _invalidate_dataset_cache(DATASETS_DIR)
         return {"success": True, "message": f"Dataset '{dataset_name}' deleted"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to delete dataset: {str(e)}")
@@ -585,6 +608,7 @@ async def delete_images(request: DeleteImagesRequest):
     """Delete specific images from a dataset"""
     deleted_count = 0
     errors = []
+    affected_dirs = set()  # 跟踪受影响的目录
     
     for path_str in request.paths:
         try:
@@ -600,6 +624,9 @@ async def delete_images(request: DeleteImagesRequest):
                 continue
                 
             if abs_path.exists() and abs_path.is_file():
+                # 记录受影响的目录
+                affected_dirs.add(abs_path.parent)
+                
                 abs_path.unlink()
                 
                 # Also try to delete associated files (.txt, .safetensors cache)
@@ -624,12 +651,117 @@ async def delete_images(request: DeleteImagesRequest):
                 
         except Exception as e:
             errors.append(f"{path_str}: {str(e)}")
+    
+    # 清除所有受影响目录的缓存
+    for dir_path in affected_dirs:
+        _invalidate_dataset_cache(dir_path)
             
     return {
         "success": True,
         "deleted": deleted_count,
         "errors": errors
     }
+
+
+# ============================================================================
+# 分桶计算器
+# ============================================================================
+
+class BucketCalculateRequest(BaseModel):
+    path: str
+    batch_size: int = 4
+    resolution_limit: int = 1536
+
+@router.post("/calculate-buckets")
+async def calculate_buckets(request: BucketCalculateRequest):
+    """计算数据集的分桶分布（基于全量数据）"""
+    import asyncio
+    
+    path = Path(request.path)
+    batch_size = max(1, min(16, request.batch_size))
+    limit = max(256, min(2048, request.resolution_limit))
+    
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Path does not exist: {request.path}")
+    
+    def _compute_buckets():
+        # 使用缓存获取文件列表
+        all_files, _ = _get_cached_files_and_size(path)
+        
+        # 加载尺寸缓存
+        dim_cache = _load_dimension_cache(path)
+        cache_modified = False
+        
+        # 按分辨率分组
+        buckets: dict[str, dict] = {}
+        
+        for file in all_files:
+            old_cache_size = len(dim_cache)
+            w, h = _get_image_dimensions(file, dim_cache)
+            if len(dim_cache) > old_cache_size:
+                cache_modified = True
+            
+            if w == 0 or h == 0:
+                continue
+            
+            # 应用分辨率限制
+            if max(w, h) > limit:
+                scale = limit / max(w, h)
+                w = int(w * scale)
+                h = int(h * scale)
+            
+            # 对齐到 8 的倍数
+            w = (w // 8) * 8
+            h = (h // 8) * 8
+            
+            key = f"{w}x{h}"
+            if key not in buckets:
+                buckets[key] = {"width": w, "height": h, "count": 0}
+            buckets[key]["count"] += 1
+        
+        # 保存尺寸缓存
+        if cache_modified:
+            _save_dimension_cache(path, dim_cache)
+        
+        # 计算每个桶的批次数和丢弃数
+        results = []
+        max_count = max([b["count"] for b in buckets.values()]) if buckets else 1
+        
+        for key, bucket in buckets.items():
+            batches = bucket["count"] // batch_size
+            dropped = bucket["count"] % batch_size
+            if batches == 0:
+                dropped = bucket["count"]  # 没有完整批次，全部丢弃
+            
+            results.append({
+                "width": bucket["width"],
+                "height": bucket["height"],
+                "aspectRatio": round(bucket["width"] / bucket["height"], 2),
+                "count": bucket["count"],
+                "batches": batches,
+                "dropped": dropped,
+                "percentage": round((bucket["count"] / max_count) * 100)
+            })
+        
+        # 按图片数量排序
+        results.sort(key=lambda x: x["count"], reverse=True)
+        
+        # 汇总统计
+        total_images = sum(b["count"] for b in results)
+        total_batches = sum(b["batches"] for b in results)
+        dropped_images = sum(b["dropped"] for b in results)
+        
+        return {
+            "buckets": results,
+            "summary": {
+                "totalImages": total_images,
+                "totalBatches": total_batches,
+                "droppedImages": dropped_images,
+                "bucketCount": len(results)
+            }
+        }
+    
+    return await asyncio.to_thread(_compute_buckets)
 
 
 # ============================================================================

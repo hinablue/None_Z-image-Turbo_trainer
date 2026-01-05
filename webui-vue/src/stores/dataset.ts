@@ -35,11 +35,25 @@ export interface DatasetInfo {
   totalTextCached?: number
 }
 
+// 本地数据集列表项（轻量级，只用于列表展示）
+export interface LocalDataset {
+  name: string
+  path: string
+  imageCount: number
+}
+
 export const useDatasetStore = defineStore('dataset', () => {
+  // ============================================================================
+  // 状态
+  // ============================================================================
   const datasets = ref<DatasetInfo[]>([])
   const currentDataset = ref<DatasetInfo | null>(null)
   const isLoading = ref(false)
   const selectedImages = ref<Set<string>>(new Set())
+
+  // 本地数据集列表（用于替代组件中的 localDatasets）
+  const localDatasets = ref<LocalDataset[]>([])
+  const datasetsDir = ref('')
 
   // 分页状态
   const currentPage = ref(1)
@@ -47,6 +61,37 @@ export const useDatasetStore = defineStore('dataset', () => {
   const pagination = ref<Pagination | null>(null)
 
   const currentImages = computed(() => currentDataset.value?.images || [])
+
+  // ============================================================================
+  // 数据集列表操作
+  // ============================================================================
+
+  /**
+   * 获取本地数据集列表
+   */
+  async function fetchDatasets() {
+    try {
+      const response = await axios.get('/api/dataset/list')
+      localDatasets.value = response.data.datasets
+      datasetsDir.value = response.data.datasetsDir
+      return response.data
+    } catch (error) {
+      console.error('Failed to fetch datasets:', error)
+      throw error
+    }
+  }
+
+  /**
+   * 清除当前数据集（返回列表视图时调用）
+   */
+  function clearCurrentDataset() {
+    currentDataset.value = null
+    clearSelection()
+  }
+
+  // ============================================================================
+  // 数据集扫描
+  // ============================================================================
 
   async function scanDataset(path: string, page: number = 1, size: number = 100) {
     isLoading.value = true
@@ -66,7 +111,7 @@ export const useDatasetStore = defineStore('dataset', () => {
       }
 
       // 添加或更新数据集列表
-      const existingIndex = datasets.value.findIndex(d => d.path === path)
+      const existingIndex = datasets.value.findIndex((d: DatasetInfo) => d.path === path)
       if (existingIndex >= 0) {
         datasets.value[existingIndex] = datasetInfo
       } else {
@@ -89,10 +134,13 @@ export const useDatasetStore = defineStore('dataset', () => {
     }
   }
 
-  // 加载指定页
+  // 加载指定页（翻页后自动刷新统计）
   async function loadPage(page: number) {
     if (!currentDataset.value) return
-    return scanDataset(currentDataset.value.path, page, pageSize.value)
+    const result = await scanDataset(currentDataset.value.path, page, pageSize.value)
+    // 异步刷新缓存统计（不阻塞翻页）
+    fetchStats()
+    return result
   }
 
   // 修改每页数量
@@ -100,11 +148,16 @@ export const useDatasetStore = defineStore('dataset', () => {
     pageSize.value = size
     currentPage.value = 1
     if (currentDataset.value) {
-      return scanDataset(currentDataset.value.path, 1, size)
+      const result = await scanDataset(currentDataset.value.path, 1, size)
+      fetchStats()
+      return result
     }
   }
 
-  // 异步获取缓存统计（不阻塞首次加载）
+  // ============================================================================
+  // 缓存统计
+  // ============================================================================
+
   const isLoadingStats = ref(false)
 
   async function fetchStats(path?: string) {
@@ -127,6 +180,10 @@ export const useDatasetStore = defineStore('dataset', () => {
     }
   }
 
+  // ============================================================================
+  // 标注操作
+  // ============================================================================
+
   async function loadCaption(imagePath: string) {
     try {
       const response = await axios.get(`/api/dataset/caption?path=${encodeURIComponent(imagePath)}`)
@@ -143,7 +200,7 @@ export const useDatasetStore = defineStore('dataset', () => {
 
       // 更新本地状态
       if (currentDataset.value) {
-        const image = currentDataset.value.images.find(img => img.path === imagePath)
+        const image = currentDataset.value.images.find((img: DatasetImage) => img.path === imagePath)
         if (image) {
           image.caption = caption
         }
@@ -170,6 +227,28 @@ export const useDatasetStore = defineStore('dataset', () => {
     }
   }
 
+  // ============================================================================
+  // 图片选择
+  // ============================================================================
+
+  // 是否当前页全部选中
+  const isAllCurrentPageSelected = computed(() => {
+    if (!currentDataset.value || currentDataset.value.images.length === 0) {
+      return false
+    }
+    return currentDataset.value.images.every(
+      (img: DatasetImage) => selectedImages.value.has(img.path)
+    )
+  })
+
+  // 当前页选中数量
+  const currentPageSelectedCount = computed(() => {
+    if (!currentDataset.value) return 0
+    return currentDataset.value.images.filter(
+      (img: DatasetImage) => selectedImages.value.has(img.path)
+    ).length
+  })
+
   function toggleImageSelection(imagePath: string) {
     if (selectedImages.value.has(imagePath)) {
       selectedImages.value.delete(imagePath)
@@ -178,32 +257,75 @@ export const useDatasetStore = defineStore('dataset', () => {
     }
   }
 
-  function selectAll() {
+  /**
+   * 选中当前页所有图片
+   */
+  function selectCurrentPage() {
     if (currentDataset.value) {
-      currentDataset.value.images.forEach(img => {
+      currentDataset.value.images.forEach((img: DatasetImage) => {
         selectedImages.value.add(img.path)
       })
     }
+  }
+
+  /**
+   * 取消选中当前页所有图片
+   */
+  function deselectCurrentPage() {
+    if (currentDataset.value) {
+      currentDataset.value.images.forEach((img: DatasetImage) => {
+        selectedImages.value.delete(img.path)
+      })
+    }
+  }
+
+  /**
+   * 切换当前页全选状态
+   */
+  function toggleSelectCurrentPage() {
+    if (isAllCurrentPageSelected.value) {
+      deselectCurrentPage()
+    } else {
+      selectCurrentPage()
+    }
+  }
+
+  // 保留旧 API 兼容
+  function selectAll() {
+    selectCurrentPage()
   }
 
   function clearSelection() {
     selectedImages.value.clear()
   }
 
+  // ============================================================================
+  // 返回
+  // ============================================================================
+
   return {
+    // 状态
     datasets,
     currentDataset,
     currentImages,
     isLoading,
     selectedImages,
+    // 本地数据集列表
+    localDatasets,
+    datasetsDir,
     // 分页相关
     currentPage,
     pageSize,
     pagination,
+    // 选择相关
+    isAllCurrentPageSelected,
+    currentPageSelectedCount,
     // 缓存统计相关
     isLoadingStats,
     fetchStats,
     // 方法
+    fetchDatasets,
+    clearCurrentDataset,
     scanDataset,
     loadPage,
     changePageSize,
@@ -211,8 +333,10 @@ export const useDatasetStore = defineStore('dataset', () => {
     saveCaption,
     generateCaptions,
     toggleImageSelection,
+    selectCurrentPage,
+    deselectCurrentPage,
+    toggleSelectCurrentPage,
     selectAll,
     clearSelection
   }
 })
-

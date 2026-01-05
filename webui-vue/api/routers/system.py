@@ -135,9 +135,24 @@ async def get_system_status():
 @router.get("/info")
 async def get_system_info():
     """Get detailed system information"""
-    import torch
-    import diffusers
     import platform
+    
+    # 可选导入 - 支持无 GPU 环境
+    try:
+        import torch
+        pytorch_ver = torch.__version__
+        cuda_ver = torch.version.cuda if torch.cuda.is_available() else "N/A"
+        cudnn_ver = str(torch.backends.cudnn.version()) if torch.backends.cudnn.is_available() else "N/A"
+    except ImportError:
+        pytorch_ver = "N/A"
+        cuda_ver = "N/A"
+        cudnn_ver = "N/A"
+    
+    try:
+        import diffusers
+        diffusers_ver = diffusers.__version__
+    except ImportError:
+        diffusers_ver = "N/A"
     
     # Get Windows version properly
     if platform.system() == "Windows":
@@ -181,14 +196,10 @@ async def get_system_info():
     except ImportError:
         bnb_ver = "N/A"
     
-    # CUDA / cuDNN
-    cuda_ver = torch.version.cuda if torch.cuda.is_available() else "N/A"
-    cudnn_ver = str(torch.backends.cudnn.version()) if torch.backends.cudnn.is_available() else "N/A"
-    
     return {
         "python": platform.python_version(),
-        "pytorch": torch.__version__,
-        "diffusers": diffusers.__version__,
+        "pytorch": pytorch_ver,
+        "diffusers": diffusers_ver,
         "xformers": xformers_ver,
         "accelerate": accelerate_ver,
         "transformers": transformers_ver,

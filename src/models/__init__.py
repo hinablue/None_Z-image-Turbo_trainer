@@ -10,7 +10,8 @@ Models Package - 多模型适配器
     from models import get_adapter, list_adapters, auto_detect_adapter
     
     # 获取适配器
-    adapter = get_adapter("zimage")
+    if torch_is_available():
+        adapter = get_adapter("zimage")
     
     # 列出所有适配器
     print(list_adapters())  # ['zimage', 'longcat']
@@ -25,33 +26,44 @@ Models Package - 多模型适配器
     4. 在 __init__.py 中导出
 """
 
-from .base import ModelAdapter, ModelConfig, LatentInfo
-from .registry import (
-    register_adapter,
-    get_adapter,
-    list_adapters,
-    auto_detect_adapter,
-)
+try:
+    import torch
+    _TORCH_AVAILABLE = True
+except ImportError:
+    _TORCH_AVAILABLE = False
 
-# 导入子模块以触发注册
-from . import zimage
-from . import longcat
+if _TORCH_AVAILABLE:
+    from .base import ModelAdapter, ModelConfig, LatentInfo
+    from .registry import (
+        register_adapter,
+        get_adapter,
+        list_adapters,
+        auto_detect_adapter,
+    )
 
-# 导出具体适配器（可选，方便直接使用）
-from .zimage import ZImageAdapter
-from .longcat import LongCatAdapter
+    # 导入子模块以触发注册
+    from . import zimage
+    from . import longcat
 
-__all__ = [
-    # 基类
-    "ModelAdapter",
-    "ModelConfig",
-    "LatentInfo",
-    # 注册表
-    "register_adapter",
-    "get_adapter",
-    "list_adapters",
-    "auto_detect_adapter",
-    # 具体适配器
-    "ZImageAdapter",
-    "LongCatAdapter",
-]
+    # 导出具体适配器（可选，方便直接使用）
+    from .zimage import ZImageAdapter
+    from .longcat import LongCatAdapter
+
+    __all__ = [
+        # 基类
+        "ModelAdapter",
+        "ModelConfig",
+        "LatentInfo",
+        # 注册表
+        "register_adapter",
+        "get_adapter",
+        "list_adapters",
+        "auto_detect_adapter",
+        # 具体适配器
+        "ZImageAdapter",
+        "LongCatAdapter",
+    ]
+else:
+    # 导出空列表或仅导出与 torch 无关的工具（如果有）
+    __all__ = []
+
