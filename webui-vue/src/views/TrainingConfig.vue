@@ -354,7 +354,7 @@
                 <el-option label="constant_with_warmup (带预热)" value="constant_with_warmup" />
               </el-select>
             </div>
-            <div class="control-row">
+            <div class="control-row" v-if="config.training.lr_scheduler !== 'constant'">
               <span class="label">
                 Warmup Steps
                 <el-tooltip content="预热步数。⚠️ 少样本训练建议设为 0，否则过长的预热会浪费训练时间（warmup 占比应 < 5%）" placement="top">
