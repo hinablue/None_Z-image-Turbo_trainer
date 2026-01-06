@@ -18,11 +18,10 @@ import os
 from pathlib import Path
 from typing import List, Tuple
 
-import torch
 from PIL import Image
-from safetensors.torch import save_file
 
-from .utils.vae_utils import load_vae
+# 延迟导入 torch 和 CUDA 相关模块（避免多卡模式下的 CUDA 初始化冲突）
+# 实际导入在需要时进行
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -78,11 +77,17 @@ def process_image(
     vae,
     resolution: int,
     output_dir: Path,
-    device: torch.device,
-    dtype: torch.dtype = torch.bfloat16,
+    device,  # torch.device - 延迟类型检查
+    dtype=None,  # torch.dtype - 延迟类型检查
     input_root: Path = None,
 ) -> None:
     """处理单张图片"""
+    import torch
+    from safetensors.torch import save_file
+    
+    if dtype is None:
+        dtype = torch.bfloat16
+    
     # 加载图片
     image = Image.open(image_path).convert('RGB')
     
@@ -137,13 +142,18 @@ def process_image(
 def worker_process(gpu_id: int, image_paths: List[Path], args, output_dir: Path, total_count: int, shared_counter, counter_lock):
     """单个 GPU worker 进程"""
     import os
+    # 必须在导入 torch 前设置环境变量（避免 CUDA 初始化冲突）
     os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    
+    # 现在可以安全导入 torch
+    import torch
     
     device = torch.device("cuda:0")  # 在这个进程中只能看到一张卡
     dtype = torch.bfloat16
     
     # 加载 VAE
     print(f"[GPU {gpu_id}] Loading VAE...", flush=True)
+    from .utils.vae_utils import load_vae
     vae = load_vae(args.vae, device=device, dtype=dtype)
     print(f"[GPU {gpu_id}] VAE loaded, processing {len(image_paths)} images", flush=True)
     
@@ -210,11 +220,30 @@ def main():
         print("No images to process", flush=True)
         return
     
-    # 检测 GPU 数量
-    num_gpus = args.num_gpus if args.num_gpus > 0 else torch.cuda.device_count()
+    # 检测 GPU 数量（避免在主进程初始化 CUDA，防止 spawn 模式下的冲突）
+    if args.num_gpus > 0:
+        num_gpus = args.num_gpus
+    else:
+        # 使用 subprocess 调用 nvidia-smi 获取 GPU 数量，避免初始化 CUDA
+        try:
+            import subprocess
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=name', '--format=csv,noheader'],
+                capture_output=True, text=True, timeout=10
+            )
+            if result.returncode == 0:
+                num_gpus = len(result.stdout.strip().split('\n'))
+            else:
+                num_gpus = 1  # 默认单卡
+        except Exception:
+            num_gpus = 1  # 如果 nvidia-smi 不可用，默认单卡
     
     if num_gpus <= 1:
         # 单 GPU 模式（兼容原有逻辑）
+        # 此时可以安全导入 torch
+        import torch
+        from .utils.vae_utils import load_vae
+        
         print(f"Using single GPU mode", flush=True)
         print(f"Progress: 0/{total}", flush=True)
         

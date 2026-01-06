@@ -17,8 +17,8 @@ import os
 from pathlib import Path
 from typing import List, Optional
 
-import torch
-from safetensors.torch import save_file
+# 延迟导入 torch 和 CUDA 相关模块（避免多卡模式下的 CUDA 初始化冲突）
+# 实际导入在需要时进行
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -27,8 +27,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(level
 ARCHITECTURE = "zi"
 
 
-def load_text_encoder(model_path: str, device: torch.device, dtype: torch.dtype):
+def load_text_encoder(model_path: str, device, dtype):
     """加载 Qwen3 文本编码器"""
+    import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
     
     logger.info(f"Loading text encoder: {model_path}")
@@ -96,9 +97,10 @@ def encode_text(
     model,
     text: str,
     max_length: int = 512,
-    device: torch.device = None,
-) -> torch.Tensor:
+    device = None,
+):
     """编码文本为嵌入向量"""
+    import torch
     # Tokenize
     inputs = tokenizer(
         text,
@@ -128,11 +130,13 @@ def process_caption(
     model,
     output_dir: Path,
     max_length: int,
-    device: torch.device,
-    dtype: torch.dtype,
+    device,
+    dtype,
     input_root: Path = None,
 ) -> bool:
     """处理单个文本描述"""
+    import torch
+    from safetensors.torch import save_file
     # 获取 caption
     caption = get_caption(image_path)
     if caption is None:
@@ -187,6 +191,9 @@ def main():
     parser.add_argument("--skip_existing", action="store_true", help="Skip existing cache files")
     
     args = parser.parse_args()
+    
+    # 延迟导入 torch（避免多卡模式下的 CUDA 初始化冲突）
+    import torch
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.bfloat16
