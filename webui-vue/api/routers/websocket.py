@@ -307,7 +307,10 @@ class ConnectionManager:
         
         if progress.get("learningRate") is not None:
             updates["learning_rate"] = progress["learningRate"]
-            state.training_history["lr_history"].append(progress["learningRate"])
+            # 只有在有 step 信息或有 loss 更新时才记录 LR 历史
+            # 避免初始化时的 LR 打印导致曲线多出几个点
+            if progress.get("step") or progress.get("loss") is not None or progress.get("ema_loss") is not None:
+                state.training_history["lr_history"].append(progress["learningRate"])
         
         if progress.get("time"):
             # 解析时间字符串
