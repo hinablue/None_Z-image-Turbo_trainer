@@ -78,13 +78,13 @@ export const useWebSocketStore = defineStore('websocket', () => {
   const reconnectAttempts = ref(0)
   const maxReconnectAttempts = 10
   const reconnectDelay = 3000
-  
+
   // 缓存状态
   const cacheStatus = ref<CacheStatus>({
     latent: { status: 'idle', progress: 0 },
     text: { status: 'idle', progress: 0 }
   })
-  
+
   // 生成状态
   const generationStatus = ref<GenerationStatus>({
     running: false,
@@ -95,26 +95,26 @@ export const useWebSocketStore = defineStore('websocket', () => {
     message: '',
     error: null
   })
-  
+
   // 日志
   const logs = ref<LogEntry[]>([])
   const maxLogs = 500
-  
+
   // 计算属性
   const connectionStatus = computed(() => {
     if (isConnected.value) return 'connected'
     if (reconnectAttempts.value > 0) return 'reconnecting'
     return 'disconnected'
   })
-  
+
   const hasRunningTask = computed(() => {
     const systemStore = useSystemStore()
     return systemStore.downloadStatus.status === 'running' ||
-           cacheStatus.value.latent.status === 'running' ||
-           cacheStatus.value.text.status === 'running' ||
-           generationStatus.value.running
+      cacheStatus.value.latent.status === 'running' ||
+      cacheStatus.value.text.status === 'running' ||
+      generationStatus.value.running
   })
-  
+
   const isGenerating = computed(() => generationStatus.value.running)
 
   /**
@@ -138,20 +138,20 @@ export const useWebSocketStore = defineStore('websocket', () => {
 
     const url = getWebSocketUrl()
     console.log('[WebSocket] Connecting to:', url)
-    
+
     try {
       ws.value = new WebSocket(url)
-      
+
       ws.value.onopen = () => {
         console.log('[WebSocket] Connected')
         isConnected.value = true
         reconnectAttempts.value = 0
-        
+
         // 更新系统状态
         const systemStore = useSystemStore()
         systemStore.setConnected(true)
       }
-      
+
       ws.value.onmessage = (event) => {
         try {
           const message: WebSocketMessage = JSON.parse(event.data)
@@ -163,16 +163,16 @@ export const useWebSocketStore = defineStore('websocket', () => {
           }
         }
       }
-      
+
       ws.value.onclose = (event) => {
         console.log('[WebSocket] Disconnected:', event.code, event.reason)
         isConnected.value = false
         ws.value = null
-        
+
         // 更新系统状态
         const systemStore = useSystemStore()
         systemStore.setConnected(false)
-        
+
         // 自动重连
         if (reconnectAttempts.value < maxReconnectAttempts) {
           reconnectAttempts.value++
@@ -180,11 +180,11 @@ export const useWebSocketStore = defineStore('websocket', () => {
           setTimeout(connect, reconnectDelay)
         }
       }
-      
+
       ws.value.onerror = (error) => {
         console.error('[WebSocket] Error:', error)
       }
-      
+
     } catch (error) {
       console.error('[WebSocket] Connection failed:', error)
       isConnected.value = false
@@ -218,7 +218,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
   function sendPing() {
     send('ping')
   }
-  
+
   /**
    * 请求完整状态
    */
@@ -232,66 +232,66 @@ export const useWebSocketStore = defineStore('websocket', () => {
   function handleMessage(message: WebSocketMessage) {
     const systemStore = useSystemStore()
     const trainingStore = useTrainingStore()
-    
+
     switch (message.type) {
       case 'init':
         // 初始化数据 - 连接时收到的完整状态
         handleInitMessage(message, systemStore, trainingStore)
         break
-        
+
       case 'status_update':
         // 定时状态更新
         handleStatusUpdate(message, systemStore, trainingStore)
         break
-        
+
       case 'generation_progress':
         // 生成进度实时更新
         handleGenerationProgress(message)
         break
-        
+
       case 'training_log':
         // 训练日志
         handleTrainingLog(message, trainingStore)
         break
-        
+
       case 'download_log':
         // 下载日志
         handleDownloadLog(message)
         break
-        
+
       case 'cache_latent_log':
         // Latent 缓存日志
         handleCacheLog('latent', message)
         break
-        
+
       case 'cache_text_log':
         // Text 缓存日志
         handleCacheLog('text', message)
         break
-        
+
       case 'gpu':
         // GPU 信息响应
         if (message.data) {
           systemStore.updateGpuInfo(message.data)
         }
         break
-        
+
       case 'full_status':
         // 完整状态响应
         handleFullStatus(message, systemStore, trainingStore)
         break
-        
+
       case 'logs':
         // 日志响应
         if (message.data) {
           logs.value = message.data
         }
         break
-        
+
       case 'logs_cleared':
         logs.value = []
         break
-        
+
       case 'training_reset':
         // 训练开始时重置图表数据
         console.log('[WebSocket] Training reset - clearing chart data')
@@ -310,7 +310,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
           })
         }
         break
-        
+
       default:
         console.log('[WebSocket] Unknown message type:', message.type)
     }
@@ -320,7 +320,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
    * 处理初始化消息
    */
   function handleInitMessage(
-    message: WebSocketMessage, 
+    message: WebSocketMessage,
     systemStore: ReturnType<typeof useSystemStore>,
     trainingStore: ReturnType<typeof useTrainingStore>
   ) {
@@ -349,7 +349,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
     if (message.logs) {
       logs.value = message.logs
     }
-    
+
     // 恢复训练历史（图表数据）
     if (message.training_history) {
       const h = message.training_history
@@ -368,7 +368,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
       })
       console.log('[WebSocket] Restored training history:', h.loss_history?.length || 0, 'loss points,', h.lr_history?.length || 0, 'lr points')
     }
-    
+
     console.log('[WebSocket] Initialized with full state')
   }
 
@@ -392,7 +392,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
     if (message.download) {
       const prevStatus = systemStore.downloadStatus.status
       systemStore.updateDownloadStatus(message.download)
-      
+
       // 下载完成/失败通知
       if (prevStatus === 'running' && message.download.status === 'completed') {
         addLog('模型下载完成！', 'success')
@@ -405,17 +405,17 @@ export const useWebSocketStore = defineStore('websocket', () => {
       const prevLoading = trainingStore.progress.isLoading
       trainingStore.progress.isRunning = message.training.running
       trainingStore.progress.isLoading = message.training.loading || false
-      
+
       // 从加载中变为训练中时添加日志
       if (prevLoading && !message.training.loading && message.training.running) {
         addLog('模型加载完成，开始训练', 'success')
       }
-      
+
       // 只在状态首次变化时添加日志（从 running 变为其他状态）
       if (prevRunning && !message.training.running) {
         // 重置训练开始时间
         trainingStartTime = null
-        
+
         if (message.training.status === 'completed') {
           addLog('训练完成！', 'success')
         } else if (message.training.status === 'failed') {
@@ -501,34 +501,34 @@ export const useWebSocketStore = defineStore('websocket', () => {
 
   // 训练开始时间（用于自动计算时间）
   let trainingStartTime: number | null = null
-  
+
   /**
    * 处理训练进度
    */
   function handleTrainingProgress(progress: any, trainingStore: ReturnType<typeof useTrainingStore>) {
     // 新格式：一次性更新多个字段
     const update: Partial<typeof trainingStore.progress> = {}
-    
+
     if (progress.epoch) {
       update.currentEpoch = progress.epoch.current
       update.totalEpochs = progress.epoch.total
     }
-    
+
     if (progress.step) {
       update.currentStep = progress.step.current
       update.totalSteps = progress.step.total || trainingStore.progress.totalSteps
-      
+
       // 自动计算时间（当没有 tqdm 时间信息时）
       if (!progress.time && progress.step.current > 0) {
         // 记录训练开始时间（第一次收到 step > 0 时）
         if (!trainingStartTime) {
           trainingStartTime = Date.now()
         }
-        
+
         const elapsedMs = Date.now() - trainingStartTime
         const elapsedSec = Math.floor(elapsedMs / 1000)
         update.elapsedTime = elapsedSec
-        
+
         // 基于当前进度估算剩余时间
         const currentStep = progress.step.current
         const totalSteps = progress.step.total || trainingStore.progress.totalSteps
@@ -540,15 +540,15 @@ export const useWebSocketStore = defineStore('websocket', () => {
         }
       }
     }
-    
+
     if (progress.loss !== undefined) {
       update.loss = progress.loss
     }
-    
+
     if (progress.learningRate !== undefined) {
       update.learningRate = progress.learningRate
     }
-    
+
     if (progress.time) {
       // 解析时间字符串 "MM:SS" 或 "H:MM:SS"
       // tqdm 格式: MM:SS (分:秒) 或 H:MM:SS (时:分:秒)
@@ -567,48 +567,58 @@ export const useWebSocketStore = defineStore('websocket', () => {
       update.elapsedTime = parseTimeStr(progress.time.elapsed)
       update.estimatedTimeRemaining = parseTimeStr(progress.time.remaining)
     }
-    
+
     // 使用 EMA loss 作为图表数据（更平滑）
     if (progress.ema_loss !== undefined) {
       update.loss = progress.ema_loss  // 显示 EMA loss
     }
-    
-    if (Object.keys(update).length > 0) {
-      trainingStore.updateProgress(update)
-      // 追加历史数据（用于图表实时更新）
-      trainingStore.appendHistory(progress.ema_loss ?? progress.loss, progress.learningRate)
-    }
-    
-    // 兼容旧格式
-    if (progress.type) {
-      switch (progress.type) {
-        case 'epoch':
-          trainingStore.updateProgress({
-            currentEpoch: progress.current,
-            totalEpochs: progress.total
-          })
-          break
-        case 'step':
-          trainingStore.updateProgress({
-            currentStep: progress.current,
-            totalSteps: progress.total || trainingStore.progress.totalSteps
-          })
-          break
-        case 'loss':
-          trainingStore.updateProgress({
-            loss: progress.value
-          })
-          break
+
+    // Strictly synchronize history updates
+    const lossVal = progress.ema_loss ?? progress.loss
+
+    // Only update history if we have a valid loss value (implies a training step)
+    if (lossVal !== undefined) {
+      if (Object.keys(update).length > 0) {
+        trainingStore.updateProgress(update)
       }
+
+      // Ensure specific LR value is recorded for this step to keep arrays aligned
+      // If progress doesn't have LR, use current store value to avoid "holes"
+      const lrVal = progress.learningRate ?? trainingStore.progress.learningRate
+
+      trainingStore.appendHistory(lossVal, lrVal)
+    } else if (Object.keys(update).length > 0) {
+      // Just update status (e.g. time, epoch) without adding history points
+      trainingStore.updateProgress(update)
+    }
+    switch (progress.type) {
+      case 'epoch':
+        trainingStore.updateProgress({
+          currentEpoch: progress.current,
+          totalEpochs: progress.total
+        })
+        break
+      case 'step':
+        trainingStore.updateProgress({
+          currentStep: progress.current,
+          totalSteps: progress.total || trainingStore.progress.totalSteps
+        })
+        break
+      case 'loss':
+        trainingStore.updateProgress({
+          loss: progress.value
+        })
+        break
     }
   }
+}
 
   /**
    * 处理缓存进度
    */
   function handleCacheProgress(type: 'latent' | 'text', progress: any) {
     const cache = cacheStatus.value[type]
-    
+
     switch (progress.type) {
       case 'progress':
         cache.status = 'running'  // 确保设置为 running
@@ -631,30 +641,30 @@ export const useWebSocketStore = defineStore('websocket', () => {
         break
     }
   }
-  
+
   /**
    * 处理缓存状态更新
    */
   function handleCacheStatusUpdate(cache: CacheStatus) {
     const prevLatent = cacheStatus.value.latent.status
     const prevText = cacheStatus.value.text.status
-    
+
     cacheStatus.value = cache
-    
+
     // 状态变化通知
     if (prevLatent === 'running' && cache.latent.status === 'completed') {
       addLog('Latent 缓存生成完成！', 'success')
     } else if (prevLatent === 'running' && cache.latent.status === 'failed') {
       addLog('Latent 缓存生成失败', 'error')
     }
-    
+
     if (prevText === 'running' && cache.text.status === 'completed') {
       addLog('Text 缓存生成完成！', 'success')
     } else if (prevText === 'running' && cache.text.status === 'failed') {
       addLog('Text 缓存生成失败', 'error')
     }
   }
-  
+
   /**
    * 处理生成进度
    */
@@ -669,14 +679,14 @@ export const useWebSocketStore = defineStore('websocket', () => {
       error: message.stage === 'failed' ? message.message || null : null
     }
   }
-  
+
   /**
    * 处理生成状态更新
    */
   function handleGenerationStatusUpdate(generation: GenerationStatus) {
     const prevStage = generationStatus.value.stage
     generationStatus.value = generation
-    
+
     // 状态变化通知
     if (prevStage !== 'completed' && generation.stage === 'completed') {
       addLog('图像生成完成！', 'success')
@@ -684,7 +694,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
       addLog(`图像生成失败: ${generation.error || '未知错误'}`, 'error')
     }
   }
-  
+
   /**
    * 重置生成状态
    */
@@ -706,7 +716,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
   function addLog(message: string, level: LogEntry['level'] = 'info') {
     const timestamp = new Date().toLocaleTimeString()
     logs.value.push({ time: timestamp, message, level })
-    
+
     // 限制日志数量
     if (logs.value.length > maxLogs) {
       logs.value = logs.value.slice(-maxLogs)
@@ -723,7 +733,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
 
   // 心跳定时器
   let heartbeatInterval: ReturnType<typeof setInterval> | null = null
-  
+
   /**
    * 启动心跳
    */
@@ -747,26 +757,26 @@ export const useWebSocketStore = defineStore('websocket', () => {
   }
 
   return {
-    // 状态
-    ws,
-    isConnected,
-    connectionStatus,
-    cacheStatus,
-    generationStatus,
-    hasRunningTask,
-    isGenerating,
-    logs,
-    
-    // 方法
-    connect,
-    disconnect,
-    send,
-    sendPing,
-    requestFullStatus,
-    addLog,
-    clearLogs,
-    startHeartbeat,
-    stopHeartbeat,
-    resetGenerationStatus
-  }
+  // 状态
+  ws,
+  isConnected,
+  connectionStatus,
+  cacheStatus,
+  generationStatus,
+  hasRunningTask,
+  isGenerating,
+  logs,
+
+  // 方法
+  connect,
+  disconnect,
+  send,
+  sendPing,
+  requestFullStatus,
+  addLog,
+  clearLogs,
+  startHeartbeat,
+  stopHeartbeat,
+  resetGenerationStatus
+}
 })
