@@ -297,19 +297,24 @@ class ConnectionManager:
             updates["current_step"] = progress["step"]["current"]
             updates["total_steps"] = progress["step"]["total"]
         
+        # 标记是否更新了 Loss，用于同步 LR 记录
+        has_loss_update = False
+        
         if progress.get("ema_loss") is not None:
             updates["loss"] = progress["ema_loss"]
             # 添加到历史（EMA loss 用于图表）
             state.training_history["loss_history"].append(progress["ema_loss"])
+            has_loss_update = True
         elif progress.get("loss") is not None:
             updates["loss"] = progress["loss"]
             state.training_history["loss_history"].append(progress["loss"])
+            has_loss_update = True
         
         if progress.get("learningRate") is not None:
             updates["learning_rate"] = progress["learningRate"]
-            # 只有在有 step 信息或有 loss 更新时才记录 LR 历史
-            # 避免初始化时的 LR 打印导致曲线多出几个点
-            if progress.get("step") or progress.get("loss") is not None or progress.get("ema_loss") is not None:
+            # 严格修正：只有在 Loss 更新时才记录 LR 历史
+            # 确保两条曲线的点数完全一致 (1:1 对应)
+            if has_loss_update:
                 state.training_history["lr_history"].append(progress["learningRate"])
         
         if progress.get("time"):
