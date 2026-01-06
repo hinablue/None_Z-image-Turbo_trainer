@@ -756,10 +756,9 @@ def main():
                 # 锚点流损失加权
                 anchor_loss_weighted = loss * snr_mean
                 
-                # 自由流 L2 也加权（修复：防止高噪区 L2 主导）
+                # 自由流 L2 不加 SNR 权重（设计意图：L2 只区分是否包含锚点）
                 if l2_loss_val > 0:
-                    l2_weighted = l2_loss * snr_mean
-                    loss = anchor_loss_weighted + current_l2_ratio * l2_weighted
+                    loss = anchor_loss_weighted + current_l2_ratio * l2_loss
                 else:
                     loss = anchor_loss_weighted
                 
@@ -778,11 +777,18 @@ def main():
                     global_step % getattr(args, 'curvature_interval', 10) == 0):
                     
                     # 获取当前锚点索引和 sigma
-                    anchor_sigmas = acrf_trainer.sigmas  # 固定的 10 个锚点
+                    anchor_sigmas = acrf_trainer.sigmas  # 实际锚点 sigma 值
                     current_sigma = timesteps.float() / 1000.0  # 当前采样的 sigma
                     
-                    # 计算 t-dt 和 t+dt (相邻锚点方向)
-                    dt = 0.1  # 10% 的时间步间隔
+                    # 动态计算 dt：使用实际锚点间距（自动适应不同步数和 shift）
+                    # 使用平均锚点间距作为 dt
+                    num_anchors = len(anchor_sigmas)
+                    if num_anchors > 1:
+                        # 计算平均间距（考虑 shift 变换后的非均匀分布）
+                        dt = (anchor_sigmas[0] - anchor_sigmas[-1]).abs().item() / (num_anchors - 1)
+                    else:
+                        dt = 0.1  # 回退默认值
+                    
                     sigma_plus = (current_sigma + dt).clamp(0.001, 0.999)
                     sigma_minus = (current_sigma - dt).clamp(0.001, 0.999)
                     
@@ -867,9 +873,12 @@ def main():
                     print(f"[STEP] {global_step}/{max_train_steps} epoch={epoch+1}/{args.num_train_epochs} loss={current_loss:.4f} ema={ema_loss:.4f} l1={l1:.4f} cos={cosine:.4f} freq={freq:.4f} style={style:.4f} L2={l2:.4f} lr={current_lr:.2e}", flush=True)
                 
                 # ========== 正则训练步骤 (按比例执行) ==========
+                # 正则化步骤在主训练步骤完成后独立执行，不参与梯度累积周期
                 if reg_dataloader and reg_ratio > 0:
+                    # 边界检查：reg_ratio 应在 (0, 1] 范围内
+                    effective_reg_ratio = min(max(reg_ratio, 0.01), 1.0)
                     # 按比例决定是否执行正则步骤：ratio=0.5 表示每2步执行1次正则
-                    reg_interval = max(1, int(1.0 / reg_ratio))
+                    reg_interval = max(1, int(1.0 / effective_reg_ratio))
                     if global_step % reg_interval == 0:
                         # 获取正则 batch
                         if reg_iterator is None:
@@ -880,36 +889,39 @@ def main():
                             reg_iterator = iter(reg_dataloader)
                             reg_batch = next(reg_iterator)
                         
-                        # 正则前向传播
-                        with accelerator.accumulate(transformer):
-                            reg_latents = reg_batch['latents'].to(accelerator.device, dtype=weight_dtype)
-                            reg_vl_embed = reg_batch['vl_embed']
-                            reg_vl_embed = [v.to(accelerator.device, dtype=weight_dtype) for v in reg_vl_embed]
-                            
-                            reg_noise = torch.randn_like(reg_latents)
-                            reg_noisy, reg_t, reg_target = acrf_trainer.sample_batch(
-                                reg_latents, reg_noise, jitter_scale=args.jitter_scale, use_anchor=args.enable_turbo
-                            )
-                            
-                            reg_input = reg_noisy.unsqueeze(2)
-                            reg_input_list = list(reg_input.unbind(dim=0))
-                            reg_t_norm = (1000 - reg_t) / 1000.0
-                            
-                            reg_pred_list = transformer(
-                                x=reg_input_list,
-                                t=reg_t_norm.to(dtype=weight_dtype),
-                                cap_feats=reg_vl_embed,
-                            )[0]
-                            reg_pred = -torch.stack(reg_pred_list, dim=0).squeeze(2)
-                            
-                            # 简单 L2 损失，保持模型原有能力
-                            reg_loss = F.mse_loss(reg_pred, reg_target) * reg_weight
-                            accelerator.backward(reg_loss)
+                        # 正则前向传播 (独立步骤，不使用 accumulate 包装)
+                        reg_latents = reg_batch['latents'].to(accelerator.device, dtype=weight_dtype)
+                        reg_vl_embed = reg_batch['vl_embed']
+                        reg_vl_embed = [v.to(accelerator.device, dtype=weight_dtype) for v in reg_vl_embed]
                         
-                        if accelerator.sync_gradients:
-                            accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
-                            optimizer.step()
-                            optimizer.zero_grad()
+                        reg_noise = torch.randn_like(reg_latents)
+                        reg_noisy, reg_t, reg_target = acrf_trainer.sample_batch(
+                            reg_latents, reg_noise, jitter_scale=args.jitter_scale, use_anchor=args.enable_turbo
+                        )
+                        
+                        reg_input = reg_noisy.unsqueeze(2)
+                        if args.gradient_checkpointing:
+                            reg_input.requires_grad_(True)
+                        reg_input_list = list(reg_input.unbind(dim=0))
+                        reg_t_norm = (1000 - reg_t) / 1000.0
+                        
+                        reg_pred_list = transformer(
+                            x=reg_input_list,
+                            t=reg_t_norm.to(dtype=weight_dtype),
+                            cap_feats=reg_vl_embed,
+                        )[0]
+                        reg_pred = -torch.stack(reg_pred_list, dim=0).squeeze(2)
+                        
+                        # 简单 L2 损失，保持模型原有能力
+                        reg_loss = F.mse_loss(reg_pred, reg_target) * reg_weight
+                        reg_loss = reg_loss.float()  # 与主损失一致，使用 float32 反向传播
+                        
+                        # 独立的优化步骤 (不参与梯度累积)
+                        accelerator.backward(reg_loss)
+                        accelerator.clip_grad_norm_(trainable_params, args.max_grad_norm)
+                        optimizer.step()
+                        lr_scheduler.step()  # 修复：正则化步骤也需要更新学习率调度器
+                        optimizer.zero_grad()
         
         # Save checkpoint
         if accelerator.is_main_process and (epoch + 1) % args.save_every_n_epochs == 0:
