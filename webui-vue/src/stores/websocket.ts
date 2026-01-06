@@ -611,7 +611,7 @@ export const useWebSocketStore = defineStore('websocket', () => {
         break
     }
   }
-}
+
 
   /**
    * 处理缓存进度
@@ -757,26 +757,26 @@ export const useWebSocketStore = defineStore('websocket', () => {
   }
 
   return {
-  // 状态
-  ws,
-  isConnected,
-  connectionStatus,
-  cacheStatus,
-  generationStatus,
-  hasRunningTask,
-  isGenerating,
-  logs,
+    // 状态
+    ws,
+    isConnected,
+    connectionStatus,
+    cacheStatus,
+    generationStatus,
+    hasRunningTask,
+    isGenerating,
+    logs,
 
-  // 方法
-  connect,
-  disconnect,
-  send,
-  sendPing,
-  requestFullStatus,
-  addLog,
-  clearLogs,
-  startHeartbeat,
-  stopHeartbeat,
-  resetGenerationStatus
-}
+    // 方法
+    connect,
+    disconnect,
+    send,
+    sendPing,
+    requestFullStatus,
+    addLog,
+    clearLogs,
+    startHeartbeat,
+    stopHeartbeat,
+    resetGenerationStatus
+  }
 })
