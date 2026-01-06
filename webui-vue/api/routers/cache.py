@@ -58,11 +58,11 @@ def _start_text_cache_after_latent():
         env["PYTHONPATH"] = str(PROJECT_ROOT / "src")
         env["PYTHONUNBUFFERED"] = "1"
         
-        # 使用保存的模型类型选择text缓存模块
-        text_module = params.get("text_module", "zimage_trainer.cache_text_encoder")
+        # 使用保存的独立脚本路径
+        text_script = params.get("text_script", str(PROJECT_ROOT / "scripts" / "cache_text_encoder_standalone.py"))
         
         cmd_text = [
-            sys.executable, "-m", text_module,
+            sys.executable, text_script,
             "--text_encoder", params["text_encoder"],
             "--input_dir", params["input_dir"],
             "--output_dir", params["output_dir"],
@@ -127,15 +127,15 @@ async def generate_cache(request: CacheGenerationRequest):
         # 重置进度（清除上次遗留）
         state.reset_cache_progress("latent")
         
-        # 根据模型类型选择缓存脚本模块
-        cache_module_map = {
-            "zimage": "zimage_trainer.cache_latents",
-            "longcat": "longcat_image.cache_latents",  # LongCat 使用 longcat_image 模块
+        # 根据模型类型选择缓存脚本（使用独立脚本，避免触发 __init__.py 导致 CUDA 初始化问题）
+        cache_script_map = {
+            "zimage": str(PROJECT_ROOT / "scripts" / "cache_latents_standalone.py"),
+            "longcat": str(PROJECT_ROOT / "scripts" / "cache_latents_standalone.py"),  # TODO: LongCat 独立脚本
         }
-        latent_module = cache_module_map.get(request.modelType, "zimage_trainer.cache_latents")
+        latent_script = cache_script_map.get(request.modelType, str(PROJECT_ROOT / "scripts" / "cache_latents_standalone.py"))
         
         cmd_latent = [
-            sys.executable, "-m", latent_module,
+            sys.executable, latent_script,
             "--vae", vae_path,  # 使用根据模型类型获取的路径
             "--input_dir", str(dataset_path),
             "--output_dir", str(dataset_path),
@@ -170,12 +170,12 @@ async def generate_cache(request: CacheGenerationRequest):
         # 重置进度（清除上次遗留）
         state.reset_cache_progress("text")
         
-        # 根据模型类型选择text缓存模块
-        text_module_map = {
-            "zimage": "zimage_trainer.cache_text_encoder",
-            "longcat": "longcat_image.cache_text_encoder",  # LongCat 使用 longcat_image 模块
+        # 根据模型类型选择text缓存脚本（使用独立脚本）
+        text_script_map = {
+            "zimage": str(PROJECT_ROOT / "scripts" / "cache_text_encoder_standalone.py"),
+            "longcat": str(PROJECT_ROOT / "scripts" / "cache_text_encoder_standalone.py"),  # TODO: LongCat 独立脚本
         }
-        text_module = text_module_map.get(request.modelType, "zimage_trainer.cache_text_encoder")
+        text_script = text_script_map.get(request.modelType, str(PROJECT_ROOT / "scripts" / "cache_text_encoder_standalone.py"))
         
         # 如果同时请求了 latent，则排队等待（顺序执行）
         if request.generateLatent:
@@ -183,7 +183,7 @@ async def generate_cache(request: CacheGenerationRequest):
                 "text_encoder": text_encoder_path,  # 使用根据模型类型获取的路径
                 "input_dir": str(dataset_path),
                 "output_dir": str(dataset_path),
-                "text_module": text_module,
+                "text_script": text_script,
                 "max_sequence_length": request.maxSequenceLength
             }
             state.add_log("Text cache 已排队，将在 Latent cache 完成后自动开始", "info")
@@ -195,7 +195,7 @@ async def generate_cache(request: CacheGenerationRequest):
         else:
             # 只请求 text，直接执行
             cmd_text = [
-                sys.executable, "-m", text_module,
+                sys.executable, text_script,
                 "--text_encoder", text_encoder_path,  # 使用根据模型类型获取的路径
                 "--input_dir", str(dataset_path),
                 "--output_dir", str(dataset_path),
