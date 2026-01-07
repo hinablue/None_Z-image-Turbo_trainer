@@ -388,6 +388,7 @@ async def generate_image_stream(req: GenerationRequest):
                         "image": r.base64,
                         "seed": r.seed,
                         "lora_path": r.metadata.get("lora_path"),
+                        "lora_scale": r.metadata.get("lora_scale"),
                     })
                 
                 result_holder["result"] = {

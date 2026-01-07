@@ -178,12 +178,19 @@
                 <!-- 对比模式：双图展示 -->
                 <div v-if="isComparisonResult && comparisonImages.length === 2" class="comparison-container">
                   <div class="comparison-image-wrapper">
-                    <div class="comparison-label">原图 (无 LoRA)</div>
+                    <div class="comparison-label original-label">
+                      <el-icon><Picture /></el-icon>
+                      原始模型 (无 LoRA)
+                    </div>
                     <img :src="comparisonImages[0].image" class="comparison-image" draggable="false" />
                   </div>
                   <div class="comparison-divider"></div>
                   <div class="comparison-image-wrapper">
-                    <div class="comparison-label lora-label">LoRA 效果</div>
+                    <div class="comparison-label lora-label">
+                      <el-icon><MagicStick /></el-icon>
+                      LoRA: {{ getLoraFileName(comparisonImages[1].lora_path) }}
+                      <span class="lora-weight">(权重: {{ comparisonImages[1].lora_scale?.toFixed(2) || params.lora_scale.toFixed(2) }})</span>
+                    </div>
                     <img :src="comparisonImages[1].image" class="comparison-image" draggable="false" />
                   </div>
                 </div>
@@ -453,8 +460,16 @@ const resultImage = ref<string | null>(savedResult?.image || null)
 const resultSeed = ref<number | null>(savedResult?.seed || null)
 
 // 对比模式结果
-const comparisonImages = ref<{image: string, lora_path: string | null}[]>([])
+const comparisonImages = ref<{image: string, lora_path: string | null, lora_scale?: number}[]>([])
 const isComparisonResult = ref(false)
+
+// 获取 LoRA 文件名
+const getLoraFileName = (path: string | null) => {
+  if (!path) return 'Unknown'
+  const parts = path.split(/[\/\\]/)
+  const filename = parts[parts.length - 1]
+  return filename.replace('.safetensors', '')
+}
 
 // SSE 进度状态
 const progressStage = ref('准备中...')
@@ -696,6 +711,7 @@ const generateImage = async () => {
                   comparisonImages.value = data.images.map((img: any) => ({
                     image: img.image.startsWith('data:') ? img.image : `data:image/png;base64,${img.image}`,
                     lora_path: img.lora_path,
+                    lora_scale: img.lora_scale || params.value.lora_scale,
                   }))
                   // 显示第二张图（LoRA）作为主结果
                   if (data.images.length > 1) {
