@@ -438,7 +438,12 @@ async def generate_image_stream(req: GenerationRequest):
                 if item is None:
                     break
                 
-                sync_broadcast_generation_progress(item)
+                sync_broadcast_generation_progress(
+                    item.get("step", 0),
+                    item.get("total", 0),
+                    item.get("stage", "generating"),
+                    item.get("message", "")
+                )
                 yield f"data: {json.dumps(item)}\n\n"
                 
                 if item.get("stage") in ["completed", "error"]:
