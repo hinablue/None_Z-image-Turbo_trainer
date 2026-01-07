@@ -26,7 +26,7 @@ except ImportError:
 
 from core.config import OUTPUTS_DIR, PROJECT_ROOT, GenerationRequest, DeleteHistoryRequest, LORA_PATH, get_model_path
 from core import state
-from core.generation_core import ImageGenerator, GenerationParams, LoRAManager, get_generator
+from core.generation_core import GenerationParams, get_generator
 from routers.websocket import sync_broadcast_generation_progress
 
 # 添加src到路径以使用models抽象层
