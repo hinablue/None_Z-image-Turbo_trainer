@@ -175,7 +175,20 @@
               @dblclick="resetZoom('main')"
             >
               <div class="zoom-wrapper" :style="mainImageStyle">
-                <img v-if="resultImage" :src="resultImage" class="generated-image" alt="Generated Image" draggable="false" />
+                <!-- 对比模式：双图展示 -->
+                <div v-if="isComparisonResult && comparisonImages.length === 2" class="comparison-container">
+                  <div class="comparison-image-wrapper">
+                    <div class="comparison-label">原图 (无 LoRA)</div>
+                    <img :src="comparisonImages[0].image" class="comparison-image" draggable="false" />
+                  </div>
+                  <div class="comparison-divider"></div>
+                  <div class="comparison-image-wrapper">
+                    <div class="comparison-label lora-label">LoRA 效果</div>
+                    <img :src="comparisonImages[1].image" class="comparison-image" draggable="false" />
+                  </div>
+                </div>
+                <!-- 普通模式：单图展示 -->
+                <img v-else-if="resultImage" :src="resultImage" class="generated-image" alt="Generated Image" draggable="false" />
                 <div v-else class="placeholder">
                   <el-icon class="placeholder-icon"><Picture /></el-icon>
                   <p>生成的图片将显示在这里</p>
@@ -190,8 +203,15 @@
                       <el-icon class="spinning"><Loading /></el-icon>
                     </div>
                     <div class="progress-info">
-                      <div class="progress-stage">🎨 生成中...</div>
-                      <div class="progress-detail">请稍候</div>
+                      <div class="progress-stage">{{ progressStage }}</div>
+                      <div class="progress-detail">{{ progressMessage }}</div>
+                      <el-progress 
+                        v-if="progressTotal > 0"
+                        :percentage="Math.round((progressStep / progressTotal) * 100)"
+                        :stroke-width="8"
+                        :show-text="true"
+                        style="margin-top: 12px; width: 200px;"
+                      />
                     </div>
                   </div>
                 </div>
@@ -432,6 +452,16 @@ const savedResult = loadSavedResult()
 const resultImage = ref<string | null>(savedResult?.image || null)
 const resultSeed = ref<number | null>(savedResult?.seed || null)
 
+// 对比模式结果
+const comparisonImages = ref<{image: string, lora_path: string | null}[]>([])
+const isComparisonResult = ref(false)
+
+// SSE 进度状态
+const progressStage = ref('准备中...')
+const progressMessage = ref('')
+const progressStep = ref(0)
+const progressTotal = ref(0)
+
 // 监听参数变化，自动保存到 localStorage
 watch(params, (newParams) => {
   try {
@@ -576,7 +606,7 @@ const setAspectRatio = (ratio: any) => {
 }
 
 
-// Generation Logic - 简单可靠的版本
+// Generation Logic - 使用 SSE 流式接口获取实时进度
 const generateImage = async () => {
   if (!params.value.prompt) {
     ElMessage.warning('请输入提示词')
@@ -584,41 +614,132 @@ const generateImage = async () => {
   }
   
   generating.value = true
-  savePendingTask() // 保存任务状态
+  isComparisonResult.value = false
+  comparisonImages.value = []
+  progressStage.value = '准备中...'
+  progressMessage.value = ''
+  progressStep.value = 0
+  progressTotal.value = params.value.steps
+  savePendingTask()
   
   try {
-    // 生成可能需要较长时间（模型加载+推理），设置 5 分钟超时
-    const res = await axios.post('/api/generate', params.value, {
-      timeout: 5 * 60 * 1000  // 5 minutes
-    })
-    if (res.data.success) {
-      resultImage.value = res.data.image
-      resultSeed.value = res.data.seed
-      // 保存结果到 localStorage
-      try {
-        localStorage.setItem(STORAGE_KEY_RESULT, JSON.stringify({
-          image: res.data.image,
-          seed: res.data.seed
-        }))
-      } catch (e) {
-        console.warn('Failed to save result:', e)
+    // 构建查询参数
+    const queryParams = new URLSearchParams()
+    Object.entries(params.value).forEach(([key, value]) => {
+      if (value !== null && value !== undefined) {
+        queryParams.append(key, String(value))
       }
-      ElMessage.success('生成成功！')
-      fetchHistory()
-      resetZoom('main')
-    } else {
-      ElMessage.error('生成失败: ' + res.data.message)
+    })
+    
+    // 使用 fetch 进行 SSE 流式请求
+    const response = await fetch('/api/generate-stream', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(params.value),
+    })
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
+    }
+    
+    const reader = response.body?.getReader()
+    const decoder = new TextDecoder()
+    
+    if (!reader) {
+      throw new Error('Failed to get reader')
+    }
+    
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      
+      const chunk = decoder.decode(value, { stream: true })
+      const lines = chunk.split('\n')
+      
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6))
+            
+            // 处理进度更新
+            if (data.stage) {
+              switch (data.stage) {
+                case 'loading':
+                  progressStage.value = '🔄 加载模型...'
+                  break
+                case 'generating':
+                  progressStage.value = '🎨 生成中...'
+                  progressStep.value = data.step || 0
+                  progressTotal.value = data.total || params.value.steps
+                  break
+                case 'saving':
+                  progressStage.value = '💾 保存中...'
+                  break
+                case 'completed':
+                  progressStage.value = '✅ 完成!'
+                  break
+                case 'error':
+                  progressStage.value = '❌ 错误'
+                  break
+              }
+              progressMessage.value = data.message || ''
+            }
+            
+            // 处理最终结果
+            if (data.success !== undefined) {
+              if (data.success) {
+                if (data.comparison_mode && data.images) {
+                  // 对比模式：两张图
+                  isComparisonResult.value = true
+                  comparisonImages.value = data.images.map((img: any) => ({
+                    image: img.image.startsWith('data:') ? img.image : `data:image/png;base64,${img.image}`,
+                    lora_path: img.lora_path,
+                  }))
+                  // 显示第二张图（LoRA）作为主结果
+                  if (data.images.length > 1) {
+                    resultImage.value = comparisonImages.value[1].image
+                  } else {
+                    resultImage.value = comparisonImages.value[0].image
+                  }
+                  resultSeed.value = data.seed
+                } else {
+                  // 普通模式
+                  isComparisonResult.value = false
+                  resultImage.value = data.image.startsWith('data:') ? data.image : `data:image/png;base64,${data.image}`
+                  resultSeed.value = data.seed
+                }
+                
+                // 保存结果
+                try {
+                  localStorage.setItem(STORAGE_KEY_RESULT, JSON.stringify({
+                    image: resultImage.value,
+                    seed: resultSeed.value
+                  }))
+                } catch (e) {
+                  console.warn('Failed to save result:', e)
+                }
+                
+                ElMessage.success('生成成功！')
+                fetchHistory()
+                resetZoom('main')
+              } else {
+                ElMessage.error('生成失败: ' + (data.message || data.error || 'Unknown error'))
+              }
+            }
+          } catch (e) {
+            // JSON 解析错误，忽略
+          }
+        }
+      }
     }
   } catch (e: any) {
     console.error('Generation error:', e)
-    if (e.code === 'ECONNABORTED') {
-      ElMessage.error('生成超时，请检查后台是否正常运行')
-    } else {
-      ElMessage.error('生成失败: ' + (e.response?.data?.detail || e.message))
-    }
+    ElMessage.error('生成失败: ' + e.message)
   } finally {
     generating.value = false
-    clearPendingTask() // 清除任务状态
+    clearPendingTask()
   }
 }
 
@@ -996,6 +1117,58 @@ onMounted(() => {
   object-fit: contain;
   box-shadow: 0 0 30px rgba(0,0,0,0.5);
   pointer-events: none;
+}
+
+/* 对比模式样式 */
+.comparison-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 100%;
+  width: 100%;
+}
+
+.comparison-image-wrapper {
+  position: relative;
+  flex: 1;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.comparison-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  box-shadow: 0 0 20px rgba(0,0,0,0.5);
+}
+
+.comparison-label {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  background: rgba(0, 0, 0, 0.7);
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: bold;
+  z-index: 10;
+  backdrop-filter: blur(4px);
+}
+
+.comparison-label.lora-label {
+  background: linear-gradient(135deg, rgba(64, 158, 255, 0.9), rgba(103, 194, 58, 0.9));
+}
+
+.comparison-divider {
+  width: 2px;
+  height: 80%;
+  background: linear-gradient(to bottom, transparent, rgba(255,255,255,0.5), transparent);
+  flex-shrink: 0;
 }
 
 .zoom-controls {
