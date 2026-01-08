@@ -262,6 +262,12 @@ def parse_args():
         args.l2_include_anchor = acrf_cfg.get("l2_include_anchor", args.l2_include_anchor)
         args.l2_anchor_ratio = acrf_cfg.get("l2_anchor_ratio", args.l2_anchor_ratio)
         
+        # Curvature Penalty (曲率惩罚)
+        args.enable_curvature = acrf_cfg.get("enable_curvature", getattr(args, 'enable_curvature', False))
+        args.lambda_curvature = acrf_cfg.get("lambda_curvature", getattr(args, 'lambda_curvature', 0.05))
+        args.curvature_interval = acrf_cfg.get("curvature_interval", getattr(args, 'curvature_interval', 10))
+        args.curvature_start_epoch = acrf_cfg.get("curvature_start_epoch", getattr(args, 'curvature_start_epoch', 0))
+        
         # Timestep-aware Loss
         args.enable_timestep_aware_loss = acrf_cfg.get("enable_timestep_aware_loss", 
                                           training_cfg.get("enable_timestep_aware_loss", args.enable_timestep_aware_loss))
