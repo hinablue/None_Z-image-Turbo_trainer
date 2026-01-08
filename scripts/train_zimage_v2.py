@@ -791,7 +791,7 @@ def main():
                     micro_step % getattr(args, 'curvature_interval', 10) == 0):
                     
                     # 获取当前锚点索引和 sigma
-                    anchor_sigmas = acrf_trainer.sigmas  # 实际锚点 sigma 值
+                    anchor_sigmas = acrf_trainer.anchor_sigmas  # 实际锚点 sigma 值
                     current_sigma = timesteps.float() / 1000.0  # 当前采样的 sigma
                     
                     # 动态计算 dt：使用实际锚点间距（自动适应不同步数和 shift）
