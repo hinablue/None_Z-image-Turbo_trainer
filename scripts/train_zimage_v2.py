@@ -563,6 +563,15 @@ def main():
     ema_decay = 0.99
     last_curv_loss = 0.0  # 持久化曲率值（打印时使用）
     
+    # Loss 累积变量（TensorBoard 标准做法）
+    accumulated_loss = 0.0
+    accumulated_l1 = 0.0
+    accumulated_cos = 0.0
+    accumulated_freq = 0.0
+    accumulated_style = 0.0
+    accumulated_l2 = 0.0
+    accumulation_count = 0
+    
     for epoch in range(args.num_train_epochs):
         if _interrupted:
             logger.info("[EXIT] Training interrupted by user")
@@ -845,6 +854,15 @@ def main():
                 
                 loss_components['curvature'] = last_curv_loss  # 使用持久化值
                 
+                # 累积 loss 用于平均计算（TensorBoard 标准做法）
+                accumulated_loss += loss.detach().float().item()
+                accumulated_l1 += loss_components.get('l1', 0)
+                accumulated_cos += loss_components.get('cosine', 0)
+                accumulated_freq += loss_components.get('freq', 0)
+                accumulated_style += loss_components.get('style', 0)
+                accumulated_l2 += loss_components.get('L2', 0)
+                accumulation_count += 1
+                
                 # Cast loss to float32 for stable backward
                 loss = loss.float()
                 
@@ -869,12 +887,28 @@ def main():
                 
                 global_step += 1
                 
-                # Update EMA loss
-                current_loss = loss.item()
+                # 计算累积期间的平均 loss（TensorBoard 标准做法）
+                avg_loss = accumulated_loss / max(accumulation_count, 1)
+                avg_l1 = accumulated_l1 / max(accumulation_count, 1)
+                avg_cos = accumulated_cos / max(accumulation_count, 1)
+                avg_freq = accumulated_freq / max(accumulation_count, 1)
+                avg_style = accumulated_style / max(accumulation_count, 1)
+                avg_l2 = accumulated_l2 / max(accumulation_count, 1)
+                
+                # 重置累积变量
+                accumulated_loss = 0.0
+                accumulated_l1 = 0.0
+                accumulated_cos = 0.0
+                accumulated_freq = 0.0
+                accumulated_style = 0.0
+                accumulated_l2 = 0.0
+                accumulation_count = 0
+                
+                # Update EMA loss（使用平均值）
                 if ema_loss is None:
-                    ema_loss = current_loss
+                    ema_loss = avg_loss
                 else:
-                    ema_loss = ema_decay * ema_loss + (1 - ema_decay) * current_loss
+                    ema_loss = ema_decay * ema_loss + (1 - ema_decay) * avg_loss
                 
                 # Get current learning rate
                 current_lr = lr_scheduler.get_last_lr()[0]
@@ -882,13 +916,8 @@ def main():
                 # Print progress for frontend parsing (CRITICAL: exact format required)
                 # 只让主进程打印日志，避免多卡训练时日志混乱
                 if accelerator.is_main_process:
-                    l1 = loss_components.get('l1', 0)
-                    cosine = loss_components.get('cosine', 0)
-                    freq = loss_components.get('freq', 0)
-                    style = loss_components.get('style', 0)
-                    l2 = loss_components.get('L2', 0)
-                    curv = loss_components.get('curvature', 0)
-                    print(f"[STEP] {global_step}/{max_train_steps} epoch={epoch+1}/{args.num_train_epochs} loss={current_loss:.4f} ema={ema_loss:.4f} l1={l1:.4f} cos={cosine:.4f} freq={freq:.4f} style={style:.4f} L2={l2:.4f} curv={curv:.4f} lr={current_lr:.2e}", flush=True)
+                    curv = last_curv_loss
+                    print(f"[STEP] {global_step}/{max_train_steps} epoch={epoch+1}/{args.num_train_epochs} loss={avg_loss:.4f} ema={ema_loss:.4f} l1={avg_l1:.4f} cos={avg_cos:.4f} freq={avg_freq:.4f} style={avg_style:.4f} L2={avg_l2:.4f} curv={curv:.4f} lr={current_lr:.2e}", flush=True)
                 
                 # ========== 正则训练步骤 (按比例执行) ==========
                 # 正则化步骤在主训练步骤完成后独立执行，不参与梯度累积周期
