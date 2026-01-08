@@ -366,6 +366,14 @@ export const useWebSocketStore = defineStore('websocket', () => {
         elapsedTime: h.elapsed_time || 0,
         estimatedTimeRemaining: h.estimated_remaining || 0
       })
+
+      // 恢复训练开始时间戳（解决刷新后时间重置问题）
+      if (h.start_timestamp && h.start_timestamp > 0) {
+        // 后端时间戳是秒，转换为毫秒
+        trainingStartTime = h.start_timestamp * 1000
+        console.log('[WebSocket] Restored training start time:', new Date(trainingStartTime).toLocaleTimeString())
+      }
+
       console.log('[WebSocket] Restored training history:', h.loss_history?.length || 0, 'loss points,', h.lr_history?.length || 0, 'lr points')
     }
 

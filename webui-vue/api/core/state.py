@@ -294,6 +294,7 @@ training_history: Dict[str, Any] = {
     "loss": 0,
     "elapsed_time": 0,
     "estimated_remaining": 0,
+    "start_timestamp": 0,    # 训练开始时间戳 (Unix timestamp, 秒)
 }
 
 def update_training_history(**kwargs):
@@ -309,6 +310,7 @@ def update_training_history(**kwargs):
 
 def clear_training_history():
     """清空训练历史（新训练开始时调用）"""
+    import time
     training_history["loss_history"] = []
     training_history["lr_history"] = []
     training_history["current_epoch"] = 0
@@ -319,6 +321,7 @@ def clear_training_history():
     training_history["loss"] = 0
     training_history["elapsed_time"] = 0
     training_history["estimated_remaining"] = 0
+    training_history["start_timestamp"] = time.time()  # 记录训练开始时间
 
 def get_training_history() -> Dict[str, Any]:
     """获取训练历史"""
