@@ -816,7 +816,7 @@ def main():
                     # 前向传播 (不计算梯度，节省显存)
                     with torch.no_grad():
                         # t + dt
-                        input_plus = noisy_plus.unsqueeze(2)
+                        input_plus = noisy_plus.to(dtype=weight_dtype).unsqueeze(2)
                         input_plus_list = list(input_plus.unbind(dim=0))
                         t_plus_norm = (1000 - sigma_plus * 1000) / 1000.0
                         t_plus_norm = t_plus_norm.to(dtype=weight_dtype)
@@ -824,7 +824,7 @@ def main():
                         pred_plus = -torch.stack(pred_plus, dim=0).squeeze(2)
                         
                         # t - dt
-                        input_minus = noisy_minus.unsqueeze(2)
+                        input_minus = noisy_minus.to(dtype=weight_dtype).unsqueeze(2)
                         input_minus_list = list(input_minus.unbind(dim=0))
                         t_minus_norm = (1000 - sigma_minus * 1000) / 1000.0
                         t_minus_norm = t_minus_norm.to(dtype=weight_dtype)
