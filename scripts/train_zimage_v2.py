@@ -561,6 +561,7 @@ def main():
     micro_step = 0  # 实际 batch 计数器（用于曲率惩罚间隔）
     ema_loss = None
     ema_decay = 0.99
+    last_curv_loss = 0.0  # 持久化曲率值（打印时使用）
     
     for epoch in range(args.num_train_epochs):
         if _interrupted:
@@ -840,8 +841,9 @@ def main():
                     # 添加到总损失
                     loss = loss + args.lambda_curvature * curvature_loss
                     curvature_loss_val = curvature_loss.item()
+                    last_curv_loss = curvature_loss_val  # 持久化保存
                 
-                loss_components['curvature'] = curvature_loss_val
+                loss_components['curvature'] = last_curv_loss  # 使用持久化值
                 
                 # Cast loss to float32 for stable backward
                 loss = loss.float()
