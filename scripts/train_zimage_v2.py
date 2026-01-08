@@ -841,8 +841,9 @@ def main():
                     
                     # 计算曲率 (二阶差分): curvature = v+ - 2v + v-
                     # 理想情况: curvature ≈ 0 (匀速直线运动)
-                    # 注意: 不除以 dt²，直接用二阶差分的大小作为曲率度量
-                    curvature = pred_plus - 2 * model_pred.detach() + pred_minus
+                    # 方案 B: pred_plus/pred_minus 是常数，只有 model_pred 有梯度
+                    # 物理意义: 惩罚当前预测偏离相邻时间步的线性插值
+                    curvature = pred_plus.detach() - 2 * model_pred + pred_minus.detach()
                     curvature_loss = (curvature ** 2).mean()
                     
                     # 添加到总损失
