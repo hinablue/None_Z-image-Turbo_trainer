@@ -344,6 +344,8 @@ def main():
     logger.info(f"   {loss_cfg}")
     if getattr(args, 'enable_timestep_aware_loss', False):
         logger.info(f"   🎛 时间步感知: ON (早期重结构, 后期重纹理)")
+    if getattr(args, 'enable_curvature', False):
+        logger.info(f"   🔄 曲率惩罚: ON (λ={getattr(args, 'lambda_curvature', 0.05)}, interval={getattr(args, 'curvature_interval', 10)}, start_epoch={getattr(args, 'curvature_start_epoch', 0)})")
     
     logger.info("\n[1/7] 加载 Transformer...")
     
@@ -790,10 +792,6 @@ def main():
                 curvature_loss_val = 0.0
                 # 更新 micro-step 计数器（每个实际 batch +1）
                 micro_step += 1
-                
-                # DEBUG: 检查曲率参数
-                if micro_step == 1:
-                    logger.info(f"[DEBUG CURV] enable={getattr(args, 'enable_curvature', False)}, lambda={getattr(args, 'lambda_curvature', 0)}, interval={getattr(args, 'curvature_interval', 10)}, start_epoch={getattr(args, 'curvature_start_epoch', 0)}")
                 
                 if (getattr(args, 'enable_curvature', False) and 
                     args.lambda_curvature > 0 and
